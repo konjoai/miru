@@ -1,44 +1,72 @@
 # 🐍 Miru
 
-![Language](https://img.shields.io/badge/language-python-blue) ![License](https://img.shields.io/badge/license-busl--1.1-green) ![Status](https://img.shields.io/badge/status-active-brightgreen)
+![Language](https://img.shields.io/badge/language-python-yellow) ![API](https://img.shields.io/badge/framework-fastapi-green) ![License](https://img.shields.io/badge/license-busl--1.1-green)
 
-> 🚀 A python FastAPI project for Multimodal reasoning tracer. Answers questions about images or documents while generating a step-by-step reasoning trace showing which regions or passages drove each reasoning step. Interactive attention visualization. Explainability for multimodal models..
+> 👁️ Multimodal reasoning tracer — see what models see, and why they decide.
 
-## ✨ Features
+---
 
-- 🛠️ Modern python development
-- 🏛️ Built with FastAPI
-- 📚 Well-documented and easy to use
-- ✅ Production-ready code
-- ⚡ Performant and reliable
+## 👁️ Meaning
+
+**Miru (見る)** — *to see, to observe.*
+
+Not just outputs — but perception and reasoning.
+
+---
+
+## 🚀 What it is
+
+Miru is a **multimodal explainability engine**:
+
+* Input: image or document + question
+* Output:
+
+  * answer
+  * reasoning trace
+  * attention visualization
+
+---
+
+## ❗ The problem
+
+Multimodal models are black boxes:
+
+* No visibility into reasoning
+* No auditability
+* No explainability
+
+Critical issue for:
+
+* compliance
+* medical
+* enterprise AI
+
+---
+
+## 🧠 What you learn
+
+* Vision-language models (VLMs)
+* Cross-attention mechanisms
+* Saliency & interpretability
+* Multimodal reasoning
+
+---
+
+## ⚙️ Stack
+
+* 🐍 Python (FastAPI backend)
+* 🎨 Visualization layer (attention maps, overlays)
+
+---
 
 ## 🚀 Quick Start
 
-### Installation
-
 ```bash
-git clone https://github.com/yourusername/miru.git
-cd miru
+uvicorn miru.main:app --reload
 ```
 
-```bash
-pip install -r requirements.txt
-```
+---
 
-## 💻 Usage
+## 🎯 Vision
 
-```bash
-# More examples coming soon
-```
-
-## 🤝 Contributing
-
-1. Fork this repository
-2. Create your feature branch: `git checkout -b feat/my-feature`
-3. Commit your changes: `git commit -m 'feat: add my feature'`
-4. Push to the branch: `git push origin feat/my-feature`
-5. Open a pull request
-
-## 📄 License
-
-This project is licensed under the busl-1.1 License — see the [LICENSE](LICENSE) file for details.
+> Make AI reasoning visible.
