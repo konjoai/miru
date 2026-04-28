@@ -8,8 +8,7 @@ import numpy as np
 from fastapi import APIRouter
 
 from miru.config import settings
-from miru.models.base import VLMBackend
-from miru.models.mock import MockVLMBackend
+from miru.models import registry
 from miru.reasoning.tracer import ReasoningTracer
 from miru.schemas import (
     ErrorResponse,
@@ -19,11 +18,9 @@ from miru.schemas import (
 )
 
 # ---------------------------------------------------------------------------
-# Backend registry
+# Initialise backend registry once at module import time.
 # ---------------------------------------------------------------------------
-_backends: dict[str, VLMBackend] = {
-    "mock": MockVLMBackend(),
-}
+registry.register_defaults()
 
 # Shared tracer instance (stateless — safe for concurrent use).
 _tracer = ReasoningTracer()
@@ -42,7 +39,7 @@ def health() -> HealthResponse:
     return HealthResponse(
         status="ok",
         version=settings.version,
-        backends=list(_backends.keys()),
+        backends=registry.available(),
     )
 
 
@@ -60,7 +57,10 @@ def analyze(payload: ImageInput) -> ReasoningTrace:
     """
     image_array = _decode_image(payload.image_b64)
 
-    backend = _backends.get(payload.backend, _backends[settings.default_backend])
+    try:
+        backend = registry.get(payload.backend)
+    except KeyError:
+        backend = registry.get(settings.default_backend)
 
     t0 = time.perf_counter()
     vlm_output = backend.infer(image_array, payload.question)

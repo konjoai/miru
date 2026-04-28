@@ -5,6 +5,41 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [0.2.0] — 2026-04-28
+
+### Added
+
+#### Backend registry (`miru/models/registry.py`)
+- `register(name, factory)` — register a `Callable[[], VLMBackend]` under a string key
+- `get(name)` — instantiate and return a backend by name; raises `KeyError` with helpful message if not found
+- `available()` — return sorted list of registered backend names
+- `register_defaults()` — register `"mock"` unconditionally; register `"clip"` when `transformers` is importable; idempotent (safe to call multiple times)
+
+#### CLIP backend (`miru/models/clip.py`)
+- `CLIPBackend` — `VLMBackend` subclass backed by `transformers.CLIPModel` + `CLIPProcessor`
+- Lazy model loading: `_model` and `_processor` are `None` until the first `infer()` call
+- Attention map extracted from the last ViT encoder layer's [CLS] token attention weights, averaged across heads, reshaped to `(grid_size, grid_size)` float32
+- Answer is `"yes"` / `"no"` based on positive vs negated question text-image similarity
+- Confidence mapped from cosine similarity range `[-1, 1]` → `[0, 1]`
+- No module-level `torch` / `transformers` imports — imports confined to `_load()` and `infer()`
+
+#### Routes update (`miru/api/routes.py`)
+- Removed hardcoded `_backends` dict; replaced with `registry.register_defaults()` at module import
+- `GET /health` now returns `registry.available()` — reflects dynamically registered backends
+- `POST /analyze` uses `registry.get(payload.backend)` with `KeyError` fallback to default backend
+
+#### Build (`pyproject.toml`)
+- Added `[backends]` optional dependency group: `transformers>=4.35.0`, `torch>=2.0.0`, `Pillow>=9.0.0`
+
+#### Tests
+- `tests/test_registry.py` — 8 tests: register/get/available/defaults/idempotency/VLMBackend instance/name/health endpoint
+- `tests/test_clip_backend.py` — 8 tests: 4 structural (no model load, always run) + 4 real-inference tests gated behind `MIRU_TEST_REAL_BACKENDS=1`
+
+### Changed
+- `miru/api/routes.py` — backend dispatch now uses the registry instead of a module-level dict; unknown backend names fall back to `settings.default_backend` via `KeyError` catch
+
+---
+
 ## [0.1.0] — 2026-04-28
 
 ### Added

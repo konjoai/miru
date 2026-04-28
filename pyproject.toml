@@ -16,6 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+backends = ["transformers>=4.35.0", "torch>=2.0.0", "Pillow>=9.0.0"]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.23.0",

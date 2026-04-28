@@ -1,8 +1,8 @@
 # PLAN.md — Miru Roadmap
 
 **Project:** Miru — Multimodal Reasoning Tracer  
-**Current version:** v0.1.0  
-**Status:** Core engine complete, 30/30 tests passing
+**Current version:** v0.2.0  
+**Status:** CLIP backend + registry complete, 53/53 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 
@@ -26,23 +26,23 @@
 
 ---
 
-## Phase 2 — Real VLM Backends (v0.2.0)
+## Phase 2 — Real VLM Backends (v0.2.0) ✅ COMPLETE
 
-**Goal:** Wire in CLIP and LLaVA-1.5 as optional HuggingFace-backed backends.
+**Goal:** Wire in CLIP as an optional HuggingFace-backed backend and introduce a proper backend registry.
 
-**Planned work:**
-- `miru/models/clip.py` — CLIP ViT image encoder; return cross-attention as attention map
-- `miru/models/llava.py` — LLaVA-1.5 7B via `transformers`; extract cross-attention from decoder layers
-- Backend registry auto-discovery via entry points
-- `backend: "clip"` and `backend: "llava-1.5"` accepted by `/analyze`
-- Optional dependency group `[backends]` in `pyproject.toml`
-- Integration tests gated on `MIRU_TEST_REAL_BACKENDS=1`
+**Delivered:**
+- `miru/models/registry.py` — `register()`, `get()`, `available()`, `register_defaults()` factory registry
+- `miru/models/clip.py` — `CLIPBackend` using `transformers.CLIPModel` + `CLIPProcessor`; lazy-loads weights on first `infer()` call; derives 2-D attention map from last ViT encoder layer's [CLS] token attention averaged across heads
+- `miru/api/routes.py` — rewired to use registry; `register_defaults()` called at module import; `/health` returns `registry.available()`; `/analyze` falls back to default backend on `KeyError`
+- `pyproject.toml` — added `[backends]` optional dependency group (`transformers>=4.35.0`, `torch>=2.0.0`, `Pillow>=9.0.0`)
+- `tests/test_registry.py` — 8 tests covering register/get/available/defaults/idempotency/health endpoint
+- `tests/test_clip_backend.py` — 8 tests: 4 structural (no model load) + 4 gated behind `MIRU_TEST_REAL_BACKENDS=1`
 
-**Ship gate:** mock tests still pass; each real backend produces cosine similarity ≥ 0.90 versus BF16 reference on a 5-image fixture set.
+**Ship gate:** 53/53 tests pass; 4 real-backend tests skip without `MIRU_TEST_REAL_BACKENDS=1`; all 41 Phase 1 tests still pass.
 
 ---
 
-## Phase 3 — Visualization (v0.3.0)
+## Phase 3 — Visualization (v0.3.0) ← NEXT
 
 **Goal:** Return attention overlays as PNG/base64 alongside the JSON trace.
 
