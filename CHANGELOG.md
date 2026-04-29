@@ -5,6 +5,43 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [0.3.0] — 2026-04-28
+
+### Added
+
+#### Visualization layer (`miru/visualization/`)
+- `miru/visualization/overlay.py` — production-grade attention overlay utilities
+  - `attention_to_heatmap(attention, colormap)` — converts 2-D float [0,1] array to (H,W,4) RGBA uint8; supports `"jet"`, `"hot"`, `"viridis"` colormaps implemented as piecewise-linear functions (zero matplotlib dependency)
+  - `overlay_attention_on_image(image_rgba, attention, alpha)` — bilinearly upsamples attention to image spatial dimensions and alpha-blends heatmap over the base RGBA image; uses Pillow `BILINEAR` resize when available, nearest-neighbour NumPy fallback otherwise
+  - `encode_png_b64(image_rgba)` — encodes (H,W,4) RGBA uint8 array to base64 PNG string; Pillow path when available, minimal pure-zlib PNG encoder (IHDR/IDAT/IEND) as fallback
+  - `decode_image_b64(b64_str)` — decodes base64 image string (any Pillow-supported format) to RGBA uint8 array
+  - `generate_overlay(image_b64, attention, alpha, colormap)` — end-to-end pipeline: decode → resize → heatmap → alpha-blend → encode PNG b64
+- `miru/visualization/__init__.py` — module entry point; re-exports all five public functions
+
+#### Schema update (`miru/schemas.py`)
+- `ReasoningTrace.overlay_b64: str | None = None` — optional field carrying the base64-encoded PNG attention overlay; `None` when overlay was not requested or failed silently
+
+#### Tracer update (`miru/reasoning/tracer.py`)
+- `ReasoningTracer.trace()` — added `image_b64: str | None = None` and `generate_overlay: bool = False` parameters; when both are provided and true, calls `generate_overlay()` and attaches result to `overlay_b64`; any exception in overlay generation is silently suppressed so the trace always succeeds
+
+#### API update (`miru/api/routes.py`)
+- `POST /analyze?overlay=true` — new `overlay: bool = Query(default=False)` parameter; passes `image_b64` and `generate_overlay=True` to `ReasoningTracer.trace()` when enabled
+
+#### Package update (`miru/__init__.py`)
+- Exports `attention_to_heatmap` and `generate_overlay` at top-level
+- Bumped `__version__` to `"0.3.0"`
+
+#### Tests
+- `tests/test_overlay.py` — 8 tests: zero-attention produces blue pixels, full-attention produces red pixels, dtype/range contract, overlay shape matches input, `encode_png_b64` returns valid base64, encode/decode round-trip preserves shape, `generate_overlay` pipeline with 1×1 white PNG, `ReasoningTrace.overlay_b64` defaults to `None`
+- `tests/test_api_overlay.py` — 4 tests: `POST /analyze` without `overlay=true` returns `overlay_b64 == null`, with valid PNG + `overlay=true` returns non-empty `overlay_b64`, with invalid image + `overlay=true` does not crash, `GET /health` regression guard
+
+### Changed
+- `miru/config.py` — bumped `Settings.version` to `"0.3.0"`
+- `pyproject.toml` — bumped project version to `"0.3.0"`
+- `tests/test_api.py` — updated `test_health_version` assertion to `"0.3.0"`
+
+---
+
 ## [0.2.0] — 2026-04-28
 
 ### Added

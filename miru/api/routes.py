@@ -5,7 +5,7 @@ import base64
 import time
 
 import numpy as np
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from miru.config import settings
 from miru.models import registry
@@ -48,12 +48,20 @@ def health() -> HealthResponse:
     response_model=ReasoningTrace,
     responses={422: {"model": ErrorResponse}},
 )
-def analyze(payload: ImageInput) -> ReasoningTrace:
+def analyze(
+    payload: ImageInput,
+    overlay: bool = Query(default=False, description="When true, include a base64 PNG attention overlay in the response."),
+) -> ReasoningTrace:
     """Run VLM inference and return a structured reasoning trace.
 
     Image decoding is best-effort: if the provided base64 payload cannot be
     decoded to a valid array, a 1×1 black RGB image is used as a fallback so
     the endpoint never raises a 5xx on bad image data.
+
+    When ``overlay=true`` is passed as a query parameter, a base64-encoded PNG
+    showing the attention heatmap blended over the source image is included in
+    the ``overlay_b64`` field of the response.  If overlay generation fails for
+    any reason the field is ``null`` and the rest of the trace is unaffected.
     """
     image_array = _decode_image(payload.image_b64)
 
@@ -66,7 +74,13 @@ def analyze(payload: ImageInput) -> ReasoningTrace:
     vlm_output = backend.infer(image_array, payload.question)
     latency_ms = (time.perf_counter() - t0) * 1_000.0
 
-    return _tracer.trace(vlm_output, backend.name, latency_ms)
+    return _tracer.trace(
+        vlm_output,
+        backend.name,
+        latency_ms,
+        image_b64=payload.image_b64 if overlay else None,
+        generate_overlay=overlay,
+    )
 
 
 # ---------------------------------------------------------------------------

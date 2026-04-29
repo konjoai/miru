@@ -1,4 +1,6 @@
 """Pydantic request/response schemas for Miru."""
+from __future__ import annotations
+
 from pydantic import BaseModel, ConfigDict, field_validator
 
 
@@ -60,6 +62,7 @@ class ReasoningTrace(BaseModel):
     attention_map: AttentionMap
     backend: str
     latency_ms: float
+    overlay_b64: str | None = None  # base64 PNG overlay; present when overlay=true
 
 
 class HealthResponse(BaseModel):

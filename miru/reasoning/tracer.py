@@ -22,6 +22,8 @@ class ReasoningTracer:
         output: VLMOutput,
         backend_name: str,
         latency_ms: float,
+        image_b64: str | None = None,
+        generate_overlay: bool = False,
     ) -> ReasoningTrace:
         """Convert a raw VLMOutput into a fully structured ReasoningTrace.
 
@@ -32,6 +34,10 @@ class ReasoningTracer:
             output: Raw inference result from a VLMBackend.
             backend_name: Identifier of the backend that produced *output*.
             latency_ms: Wall-clock inference time in milliseconds.
+            image_b64: Optional base64-encoded source image.  Required when
+                *generate_overlay* is True.
+            generate_overlay: When True and *image_b64* is provided, generate
+                a PNG overlay and attach it to the trace as ``overlay_b64``.
 
         Returns:
             Immutable ReasoningTrace ready for API serialisation.
@@ -57,10 +63,21 @@ class ReasoningTracer:
             for i, desc in enumerate(output.reasoning_steps)
         ]
 
+        # --- Optional overlay --------------------------------------------
+        overlay_b64: str | None = None
+        if generate_overlay and image_b64 is not None:
+            try:
+                from miru.visualization.overlay import generate_overlay as _gen_overlay
+
+                overlay_b64 = _gen_overlay(image_b64, attention_grid)
+            except Exception:  # noqa: BLE001 — never crash the trace on overlay failure
+                overlay_b64 = None
+
         return ReasoningTrace(
             answer=output.answer,
             steps=steps,
             attention_map=attn_map,
             backend=backend_name,
             latency_ms=latency_ms,
+            overlay_b64=overlay_b64,
         )

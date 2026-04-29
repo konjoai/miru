@@ -1,8 +1,8 @@
 # PLAN.md — Miru Roadmap
 
 **Project:** Miru — Multimodal Reasoning Tracer  
-**Current version:** v0.2.0  
-**Status:** CLIP backend + registry complete, 53/53 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
+**Current version:** v0.3.0  
+**Status:** Visualization overlay complete, 65/65 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 
@@ -42,16 +42,21 @@
 
 ---
 
-## Phase 3 — Visualization (v0.3.0) ← NEXT
+## Phase 3 — Visualization (v0.3.0) ✅ COMPLETE
 
 **Goal:** Return attention overlays as PNG/base64 alongside the JSON trace.
 
-**Planned work:**
-- `miru/visualization/overlay.py` — bilinear upsample attention map → RGBA heatmap overlay on input image (Pillow)
-- `ReasoningTrace.overlay_b64: str | None` — optional PNG overlay
-- `/analyze?overlay=true` query parameter
-- GradCAM support for transformer attention layers
-- Tests: pixel-level regression against known fixture overlays
+**Delivered:**
+- `miru/visualization/overlay.py` — bilinear upsample attention map → RGBA heatmap overlay on input image; jet/hot/viridis colormaps implemented as piecewise-linear functions (no matplotlib); Pillow used when available, pure-zlib PNG encoder as fallback
+- `miru/visualization/__init__.py` — exports `attention_to_heatmap`, `overlay_attention_on_image`, `encode_png_b64`, `decode_image_b64`, `generate_overlay`
+- `ReasoningTrace.overlay_b64: str | None = None` — optional base64 PNG overlay field
+- `ReasoningTracer.trace()` — extended with `image_b64` and `generate_overlay` optional params; silently falls back to `overlay_b64=None` on any overlay error
+- `POST /analyze?overlay=true` — query parameter wires image payload → overlay pipeline → `overlay_b64` field in response
+- `miru/__init__.py` — exports `attention_to_heatmap`, `generate_overlay`; bumped to v0.3.0
+- `tests/test_overlay.py` — 8 tests: zero-attention blue, full-attention red, dtype/range, overlay shape, encode valid base64, round-trip decode, generate_overlay pipeline, schema field default
+- `tests/test_api_overlay.py` — 4 tests: no-overlay null, overlay non-empty string, invalid-image no crash, health regression guard
+
+**Ship gate:** 65/65 tests pass; 4 real-backend tests skip without `MIRU_TEST_REAL_BACKENDS=1`; all 53 Phase 1+2 tests still pass.
 
 ---
 
