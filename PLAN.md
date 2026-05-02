@@ -1,8 +1,8 @@
 # PLAN.md — Miru Roadmap
 
 **Project:** Miru — Multimodal Reasoning Tracer  
-**Current version:** v0.4.0  
-**Status:** SSE streaming complete, 75/75 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
+**Current version:** v0.5.0  
+**Status:** Dataset recorder complete, 100/100 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 
@@ -79,13 +79,26 @@
 
 ---
 
-## Phase 5 — Dataset Recorder (v0.5.0)
+## Phase 5 — Dataset Recorder (v0.5.0) ✅ COMPLETE
 
 **Goal:** Record reasoning traces to disk/S3 for fine-tuning data pipelines.
 
-**Planned work:**
-- `miru/recorder.py` — async queue writer; flushes JSONL batches to `fsspec` backend
-- `/analyze` middleware hook to enqueue traces when `MIRU_RECORD=1`
-- `miru record list` / `miru record export` CLI
-- Privacy: strip raw image bytes from stored traces; store hash only
-- Tests: mock fsspec; assert JSONL schema matches `ReasoningTrace`
+**Delivered:**
+- `miru/recorder.py` — `TraceRecorder` threaded JSONL writer; per-batch timestamped files for fsspec compatibility (S3, GCS, memory, local); `MIRU_RECORD` env gating; `MIRU_RECORD_PATH` directory override
+- Privacy: SHA-256 hex of `image_b64` is the only image-derived data persisted; raw bytes and overlay PNG are stripped before serialisation
+- API hooks: `maybe_record()` called from `POST /analyze` and inside `stream_analyze` for `POST /analyze/stream`; errors swallowed so recording can never break the request path
+- CLI (`miru/cli/`): `miru record list` (tab-separated record-count/size/path per file) and `miru record export --out <f> [--format jsonl|csv]`; entry point registered under `[project.scripts] miru`
+- Optional `[storage]` extras install of `fsspec`; `fsspec` also bundled in `[dev]`
+- 25 new tests across `tests/test_recorder.py` (17) and `tests/test_record_cli.py` (8); `memory://` round-trip exercises the fsspec path
+
+**Ship gate:** 100/100 tests pass; all 75 prior tests still pass; 4 real-backend tests skip without `MIRU_TEST_REAL_BACKENDS=1`.
+
+---
+
+## Phase 6 — TBD
+
+Open candidates (Discovery to refine before sprinting):
+- Native VLM streaming backend (LLaVA / Idefics / Qwen-VL with token-level attention) so `/analyze/stream` produces genuinely incremental reasoning instead of replaying a single-shot inference.
+- Trained-saliency benchmarks: take a held-out VQA slice, score Miru's attention against ground-truth bounding boxes, publish the curve.
+- Web UI viewer for recorded traces: render attention overlays + step timelines from the JSONL the recorder writes.
+- gRPC alternative to the FastAPI surface for in-cluster low-latency inference.

@@ -71,6 +71,16 @@ uvicorn miru.main:app --reload
 * `POST /analyze` — synchronous reasoning trace; `?overlay=true` returns base64 PNG attention overlay
 * `POST /analyze/stream` — Server-Sent Events. Emits `step` events as each reasoning step lands, then a final `trace` event (schema-equivalent to `/analyze`), then `done`. Supports `?overlay=true` and `?timeout_seconds=<1..300>` (default 30s).
 
+### Recording traces
+
+Set `MIRU_RECORD=1` (and optionally `MIRU_RECORD_PATH=<dir-or-uri>`) to persist every trace as JSONL. Raw image bytes are never stored — only the SHA-256 of the source `image_b64` payload, alongside the question, an ISO-8601 UTC timestamp, and the trace itself (with the overlay stripped). Local paths and any `fsspec`-supported URI (`s3://…`, `gs://…`, `memory://…`) are accepted; install `fsspec` via `pip install miru[storage]` for cloud backends.
+
+```bash
+miru record list                    # inventory of recorded files
+miru record export --out all.jsonl  # concatenate everything into one JSONL
+miru record export --out summary.csv --format csv
+```
+
 ---
 
 ## 🎯 Vision

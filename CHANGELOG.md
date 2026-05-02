@@ -5,6 +5,47 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [0.5.0] — 2026-05-02
+
+### Added
+
+#### Dataset recorder (`miru/recorder.py`)
+- `TraceRecorder` — threaded JSONL writer with `queue.Queue` + daemon worker; configurable `batch_size` (default 64) and `flush_interval` (default 5s); `start()` / `stop()` / `flush()` lifecycle
+- `is_recording_enabled()` — env-gated on `MIRU_RECORD ∈ {1, true, yes, on}`
+- `build_record(trace_dict, image_b64, question)` — privacy-stripped record: SHA-256 hex of source `image_b64` only, raw bytes never persisted; `overlay_b64` field stripped from the trace before serialisation
+- `maybe_record(trace_dict, image_b64, question)` — fire-and-forget hook; swallows all errors so the request path is never broken by recorder failure
+- `get_recorder()` / `reset_recorder()` — process-wide singleton with thread-safe init
+- Storage backend: local filesystem when path has no URI scheme, `fsspec.open()` when scheme is present (`s3://`, `gs://`, `memory://`, …); `fsspec` is an optional `[storage]` extras install
+- Per-batch file naming `traces-YYYYMMDDTHHMMSS-<microseconds>.jsonl` — uniform across cloud stores that don't support append (S3 et al.) and lexicographic time-sorted
+
+#### API hooks (`miru/api/routes.py`, `miru/api/streaming.py`)
+- `POST /analyze` — calls `maybe_record()` after building the trace
+- `POST /analyze/stream` — calls `maybe_record()` inside `stream_analyze` after building the final trace; new `record: bool = False` parameter
+
+#### CLI (`miru/cli/`)
+- New entry point: `miru = "miru.cli:main"` registered in `[project.scripts]`
+- `miru record list [--path <dir>]` — tab-separated `<records>\t<bytes>\t<path>` per file; prints `no recorded traces` for empty dirs
+- `miru record export --out <file> [--path <dir>] [--format jsonl|csv]` — concatenate all recorded JSONL or flatten to CSV (`ts, question, image_sha256, answer, backend, latency_ms, n_steps`); skips corrupt JSON lines silently
+
+#### Tests
+- `tests/test_recorder.py` — 17 tests: hash determinism, privacy strip, ISO timestamp, env truthy/falsy gating, `maybe_record` no-op when disabled, JSONL line shape, flush count, stop drains queue, batching above `batch_size`, singleton identity, reset semantics, fsspec `memory://` round-trip, `/analyze` records, `/analyze` does not record when disabled, `/analyze/stream` records
+- `tests/test_record_cli.py` — 8 tests: parser shape, empty-dir list, list output format, list main entrypoint, JSONL export concatenation, corrupt-line skip, CSV flattening, CSV main entrypoint
+
+### Changed
+- `miru/__init__.py`, `miru/config.py`, `pyproject.toml` — version bumped to `0.5.0`
+- `pyproject.toml` — added `[project.scripts] miru = "miru.cli:main"`; new `[storage]` optional extras (`fsspec>=2024.2.0`); `fsspec` added to `[dev]`
+
+### Privacy notes
+- Stored records contain SHA-256 of the base64 image string and **never** the image itself or any derivative (overlay PNG is stripped before persistence)
+- Hash covers the encoded payload byte-for-byte so identical uploads collide for de-duplication
+- Question text is preserved verbatim (callers must scrub PII upstream if required)
+
+### Test results
+- 100 / 100 passing (4 skipped — gated CLIP real-backend tests)
+- All 75 prior tests still pass
+
+---
+
 ## [0.4.0] — 2026-05-01
 
 ### Added

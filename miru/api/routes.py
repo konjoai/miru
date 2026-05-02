@@ -12,6 +12,7 @@ from miru.api.streaming import stream_analyze
 from miru.config import settings
 from miru.models import registry
 from miru.reasoning.tracer import ReasoningTracer
+from miru.recorder import maybe_record
 from miru.schemas import (
     ErrorResponse,
     HealthResponse,
@@ -76,13 +77,15 @@ def analyze(
     vlm_output = backend.infer(image_array, payload.question)
     latency_ms = (time.perf_counter() - t0) * 1_000.0
 
-    return _tracer.trace(
+    trace = _tracer.trace(
         vlm_output,
         backend.name,
         latency_ms,
         image_b64=payload.image_b64 if overlay else None,
         generate_overlay=overlay,
     )
+    maybe_record(trace.model_dump(), image_b64=payload.image_b64, question=payload.question)
+    return trace
 
 
 @router.post(
@@ -118,9 +121,10 @@ def analyze_stream(
         backend,
         image_array,
         payload.question,
-        image_b64=payload.image_b64 if overlay else None,
+        image_b64=payload.image_b64,
         overlay=overlay,
         timeout_seconds=timeout_seconds,
+        record=True,
     )
 
     return StreamingResponse(

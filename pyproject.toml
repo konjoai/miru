@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "miru"
-version = "0.4.0"
+version = "0.5.0"
 description = "Multimodal reasoning tracer and VLM explainability engine"
 license = { text = "BUSL-1.1" }
 requires-python = ">=3.10"
@@ -17,12 +17,17 @@ dependencies = [
 
 [project.optional-dependencies]
 backends = ["transformers>=4.35.0", "torch>=2.0.0", "Pillow>=9.0.0"]
+storage = ["fsspec>=2024.2.0"]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.23.0",
     "httpx>=0.25.0",
     "pytest-cov>=4.1.0",
+    "fsspec>=2024.2.0",
 ]
+
+[project.scripts]
+miru = "miru.cli:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

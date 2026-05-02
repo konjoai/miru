@@ -36,6 +36,7 @@ import numpy as np
 from miru.attention.extractor import AttentionExtractor
 from miru.models.base import VLMBackend, VLMStreamChunk
 from miru.reasoning.tracer import ReasoningTracer, step_confidence
+from miru.recorder import maybe_record
 from miru.schemas import AttentionMap, ReasoningStep, ReasoningTrace
 from miru.visualization.overlay import generate_overlay as _gen_overlay
 
@@ -60,6 +61,7 @@ async def stream_analyze(
     extractor: Optional[AttentionExtractor] = None,
     timeout_seconds: float = 30.0,
     keepalive_seconds: float = 5.0,
+    record: bool = False,
 ) -> AsyncIterator[bytes]:
     """Async generator yielding SSE-framed bytes for /analyze/stream.
 
@@ -170,7 +172,11 @@ async def stream_analyze(
         overlay_b64=overlay_b64,
     )
 
-    yield _format_sse("trace", trace.model_dump())
+    trace_dict = trace.model_dump()
+    if record:
+        maybe_record(trace_dict, image_b64=image_b64, question=question)
+
+    yield _format_sse("trace", trace_dict)
     yield _format_sse("done", {})
 
 
