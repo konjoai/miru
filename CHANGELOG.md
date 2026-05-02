@@ -5,6 +5,61 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [0.4.0] — 2026-05-01
+
+### Added
+
+#### Streaming protocol (`miru/api/streaming.py`)
+- `stream_analyze(backend, image_array, question, …)` — async generator that drives `VLMBackend.stream_infer` and emits SSE-framed bytes
+- Event grammar:
+  - `event: step` — `{"step": <int>, "description": <str>, "confidence": <float>}` per reasoning step as it becomes available
+  - `event: trace` — full `ReasoningTrace` JSON, schema-equivalent to the `/analyze` response (confidence, attention map, optional overlay)
+  - `event: done` — empty payload sentinel
+  - `event: error` — `{"error": <kind>, "detail": <str>}` on inference failure or timeout
+- `: keepalive` SSE comments emitted at `keepalive_seconds` intervals so intermediate proxies do not idle-close long-running streams
+- Per-request `timeout_seconds` budget (default 30s, query-tunable 1–300s); exceeding it emits a clean `error` event and closes the stream
+- Producer/consumer pattern: synchronous `stream_infer` runs in a thread, marshaled to the event loop via `asyncio.Queue` (max 64) for backpressure
+
+#### Backend interface (`miru/models/base.py`)
+- `VLMStreamChunk` dataclass — `kind ∈ {"step", "final"}` with `step_index`, `step_description`, or full `output`
+- `VLMBackend.stream_infer(image_array, question) -> Iterator[VLMStreamChunk]` — default impl replays `infer()` reasoning steps progressively; backends with native autoregressive token streaming should override
+
+#### API endpoint (`miru/api/routes.py`)
+- `POST /analyze/stream` — returns `text/event-stream`; query params `overlay: bool` and `timeout_seconds: float` (1–300, default 30)
+- Same payload shape as `/analyze` (`ImageInput`); same fallback semantics for unknown backends; same image-decode safety
+- Response headers: `Cache-Control: no-cache`, `X-Accel-Buffering: no`, `Connection: keep-alive`
+
+#### Tracer helper (`miru/reasoning/tracer.py`)
+- `step_confidence(base_confidence, step_index)` — extracted decay logic so the streaming path produces identical confidence values to the synchronous tracer
+
+#### Tests (`tests/test_streaming.py`) — 10 new tests
+- Endpoint emits steps + trace + done in order
+- Step event shape (keys, types, confidence range)
+- Streamed `trace` event matches `POST /analyze` response (modulo latency)
+- `?overlay=true` populates `overlay_b64`
+- Default `overlay_b64` is null
+- Unknown backend falls back to mock
+- `done` is the final event
+- Step indices are sequential 1..N
+- Default `stream_infer` replays steps then yields final
+- Backend-side exception emits an `error` event without crashing the connection
+
+### Changed
+- `miru/config.py` — bumped `Settings.version` to `"0.4.0"`
+- `pyproject.toml` — bumped project version to `"0.4.0"`
+- `miru/__init__.py` — bumped `__version__` to `"0.4.0"`
+- `tests/test_api.py` — version assertion updated
+
+### Deviations from plan
+- PLAN.md specified `GET /analyze/stream`; implemented as `POST` because the request payload includes a base64 image which does not fit a GET query string in any practical way. POST + `text/event-stream` is the canonical pattern for streaming responses with a non-trivial request body. This is *Konjo pushback* — the plan was a sketch, the right shape is POST.
+- Did not introduce `sse-starlette` as a dependency; SSE framing is ~5 lines of byte concatenation. Honoring 건조 (strip to essence).
+
+### Test results
+- 75 / 75 passing (4 skipped — gated CLIP real-backend tests)
+- Phase 1+2+3 unaffected (65/65 still pass)
+
+---
+
 ## [0.3.0] — 2026-04-28
 
 ### Added

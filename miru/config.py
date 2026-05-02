@@ -8,7 +8,7 @@ class Settings(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     app_name: str = "miru"
-    version: str = "0.3.0"
+    version: str = "0.4.0"
     default_backend: str = "mock"
     max_image_size_bytes: int = 10 * 1024 * 1024  # 10 MB
     attention_resolution: int = 16  # NxN grid size

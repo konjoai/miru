@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "miru"
-version = "0.3.0"
+version = "0.4.0"
 description = "Multimodal reasoning tracer and VLM explainability engine"
 license = { text = "BUSL-1.1" }
 requires-python = ">=3.10"

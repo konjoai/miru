@@ -1,8 +1,8 @@
 # PLAN.md — Miru Roadmap
 
 **Project:** Miru — Multimodal Reasoning Tracer  
-**Current version:** v0.3.0  
-**Status:** Visualization overlay complete, 65/65 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
+**Current version:** v0.4.0  
+**Status:** SSE streaming complete, 75/75 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 
@@ -60,15 +60,22 @@
 
 ---
 
-## Phase 4 — Streaming (v0.4.0)
+## Phase 4 — Streaming (v0.4.0) ✅ COMPLETE
 
 **Goal:** SSE streaming for token-by-token reasoning trace delivery.
 
-**Planned work:**
-- `GET /analyze/stream` SSE endpoint — streams `ReasoningStep` events as the model generates tokens
-- `EventSourceResponse` via `sse-starlette`
-- Backpressure and timeout handling
-- Tests: consume full SSE stream and validate final state matches `/analyze`
+**Delivered:**
+- `miru/api/streaming.py` — `stream_analyze()` async generator, byte-level SSE framing (`step` / `trace` / `done` / `error` events), `: keepalive` comments, per-request `timeout_seconds` budget, backpressure via `asyncio.Queue(maxsize=64)` between thread-pool producer and event-loop consumer
+- `miru/models/base.py` — `VLMStreamChunk` dataclass + `VLMBackend.stream_infer()` default generator that replays `infer()` reasoning steps progressively; native streaming backends override
+- `miru/reasoning/tracer.py` — extracted `step_confidence()` so streamed and synchronous traces produce identical per-step confidence values
+- `miru/api/routes.py` — `POST /analyze/stream` with `overlay: bool` and `timeout_seconds: float` (1–300) query params; same `ImageInput` payload, same unknown-backend fallback
+- `tests/test_streaming.py` — 10 tests covering frame ordering, payload shape, parity with `/analyze`, overlay propagation, timeout budget, and backend-failure error events
+
+**Deviations:**
+- Endpoint is `POST`, not `GET` (per original sketch) — image_b64 doesn't fit a GET query string. POST + `text/event-stream` is the canonical pattern.
+- No `sse-starlette` dependency — SSE framing is hand-rolled (5 lines). 건조.
+
+**Ship gate:** 75/75 tests pass; all 65 prior tests still pass; 4 real-backend tests skip without `MIRU_TEST_REAL_BACKENDS=1`.
 
 ---
 

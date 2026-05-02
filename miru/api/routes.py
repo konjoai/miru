@@ -6,7 +6,9 @@ import time
 
 import numpy as np
 from fastapi import APIRouter, Query
+from fastapi.responses import StreamingResponse
 
+from miru.api.streaming import stream_analyze
 from miru.config import settings
 from miru.models import registry
 from miru.reasoning.tracer import ReasoningTracer
@@ -80,6 +82,55 @@ def analyze(
         latency_ms,
         image_b64=payload.image_b64 if overlay else None,
         generate_overlay=overlay,
+    )
+
+
+@router.post(
+    "/analyze/stream",
+    responses={422: {"model": ErrorResponse}},
+)
+def analyze_stream(
+    payload: ImageInput,
+    overlay: bool = Query(default=False, description="Include base64 PNG overlay in the trailing trace event."),
+    timeout_seconds: float = Query(default=30.0, ge=1.0, le=300.0, description="Overall inference budget."),
+) -> StreamingResponse:
+    """Stream a reasoning trace via Server-Sent Events.
+
+    Emits ``step`` events as each reasoning step becomes available, then a
+    final ``trace`` event with the complete :class:`ReasoningTrace` JSON,
+    followed by a ``done`` sentinel.  See ``miru.api.streaming`` for the
+    full event grammar.
+
+    Implementation note: the upstream plan named this ``GET /analyze/stream``
+    but the request payload includes a base64 image which does not fit a GET
+    query string in any practical way.  POST + ``text/event-stream`` is the
+    canonical pattern for streaming long-lived responses with a non-trivial
+    request body.
+    """
+    image_array = _decode_image(payload.image_b64)
+
+    try:
+        backend = registry.get(payload.backend)
+    except KeyError:
+        backend = registry.get(settings.default_backend)
+
+    generator = stream_analyze(
+        backend,
+        image_array,
+        payload.question,
+        image_b64=payload.image_b64 if overlay else None,
+        overlay=overlay,
+        timeout_seconds=timeout_seconds,
+    )
+
+    return StreamingResponse(
+        generator,
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
     )
 
 

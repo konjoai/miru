@@ -65,6 +65,12 @@ Critical issue for:
 uvicorn miru.main:app --reload
 ```
 
+### Endpoints
+
+* `GET  /health` — service status + registered backends
+* `POST /analyze` — synchronous reasoning trace; `?overlay=true` returns base64 PNG attention overlay
+* `POST /analyze/stream` — Server-Sent Events. Emits `step` events as each reasoning step lands, then a final `trace` event (schema-equivalent to `/analyze`), then `done`. Supports `?overlay=true` and `?timeout_seconds=<1..300>` (default 30s).
+
 ---
 
 ## 🎯 Vision

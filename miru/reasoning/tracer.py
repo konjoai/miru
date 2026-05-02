@@ -6,6 +6,16 @@ from miru.models.base import VLMOutput
 from miru.schemas import AttentionMap, ReasoningStep, ReasoningTrace
 
 
+def step_confidence(base_confidence: float, step_index: int) -> float:
+    """Confidence for a single reasoning step given the overall confidence.
+
+    Each step decays by 5% relative to the previous to model compounding
+    uncertainty.  Clamped to [0, 1].
+    """
+    raw = base_confidence * (1.0 - 0.05 * step_index)
+    return float(min(1.0, max(0.0, raw)))
+
+
 class ReasoningTracer:
     """Build a structured ReasoningTrace from a VLMOutput.
 
@@ -58,7 +68,7 @@ class ReasoningTracer:
             ReasoningStep(
                 step=i + 1,
                 description=desc,
-                confidence=min(1.0, output.confidence * (1.0 - 0.05 * i)),
+                confidence=step_confidence(output.confidence, i),
             )
             for i, desc in enumerate(output.reasoning_steps)
         ]
