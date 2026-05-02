@@ -1,0 +1,1329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Miru — Multimodal Reasoning Tracer</title>
+<style>
+  /* ---------- Design tokens ---------- */
+  :root {
+    --bg-0: #08090d;
+    --bg-1: #0d0f15;
+    --bg-2: #14171f;
+    --bg-3: #1c2030;
+    --line: #232838;
+    --line-2: #2e3346;
+    --fg-0: #e7eaf2;
+    --fg-1: #a3a9bd;
+    --fg-2: #6b7088;
+    --accent: #7ad7ff;
+    --accent-2: #b08cff;
+    --accent-3: #ff8ad3;
+    --hot: #ff5e7a;
+    --warm: #f6c177;
+    --cool: #6ed6c4;
+    --green: #69e896;
+    --grad: linear-gradient(135deg, #7ad7ff 0%, #b08cff 50%, #ff8ad3 100%);
+    --glow: 0 0 60px -20px var(--accent-2), 0 0 120px -40px var(--accent);
+    --mono: ui-monospace, "JetBrains Mono", "Fira Code", "SF Mono", Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Inter", "Helvetica Neue", system-ui, sans-serif;
+  }
+
+  /* ---------- Reset + base ---------- */
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg-0);
+    color: var(--fg-0);
+    font-family: var(--sans);
+    line-height: 1.55;
+    font-size: 16px;
+    overflow-x: hidden;
+    background-image:
+      radial-gradient(ellipse 80% 50% at 50% -10%, rgba(176, 140, 255, 0.18), transparent 60%),
+      radial-gradient(ellipse 60% 40% at 90% 30%, rgba(122, 215, 255, 0.10), transparent 60%),
+      radial-gradient(ellipse 60% 40% at 10% 70%, rgba(255, 138, 211, 0.08), transparent 60%);
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: var(--accent-2); }
+  code, pre { font-family: var(--mono); }
+
+  /* ---------- Layout ---------- */
+  .container { max-width: 1180px; margin: 0 auto; padding: 0 32px; }
+  section { padding: 96px 0; position: relative; }
+  h1, h2, h3 { font-weight: 600; letter-spacing: -0.02em; margin: 0; }
+  h1 { font-size: clamp(40px, 6vw, 72px); line-height: 1.05; }
+  h2 { font-size: clamp(28px, 3.5vw, 42px); line-height: 1.15; margin-bottom: 12px; }
+  h3 { font-size: 18px; line-height: 1.3; }
+  p { color: var(--fg-1); margin: 0 0 12px 0; }
+  .muted { color: var(--fg-2); }
+  .gradient-text {
+    background: var(--grad);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* ---------- Top nav ---------- */
+  nav.top {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    background: rgba(8, 9, 13, 0.7);
+    border-bottom: 1px solid var(--line);
+  }
+  nav.top .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 0;
+  }
+  nav.top .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+  nav.top .brand .dot {
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: var(--grad);
+    box-shadow: 0 0 18px var(--accent-2);
+  }
+  nav.top .links { display: flex; gap: 28px; font-size: 14px; color: var(--fg-1); }
+  nav.top .links a { color: var(--fg-1); }
+  nav.top .links a:hover { color: var(--fg-0); }
+
+  /* ---------- Hero ---------- */
+  .hero { padding-top: 80px; padding-bottom: 80px; }
+  .hero .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    border: 1px solid var(--line-2);
+    border-radius: 999px;
+    background: rgba(28, 32, 48, 0.5);
+    font-size: 13px;
+    color: var(--fg-1);
+    margin-bottom: 28px;
+  }
+  .hero .eyebrow .pulse {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 0 0 var(--green);
+    animation: pulse 1.8s infinite;
+  }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(105, 232, 150, 0.7); }
+    70%  { box-shadow: 0 0 0 12px rgba(105, 232, 150, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(105, 232, 150, 0); }
+  }
+  .hero p.lead { font-size: 22px; max-width: 720px; margin-top: 24px; color: var(--fg-1); }
+  .hero .ctas { margin-top: 36px; display: flex; gap: 16px; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 10px;
+    padding: 12px 20px;
+    border-radius: 10px;
+    font-weight: 500;
+    font-size: 15px;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+    cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .btn.primary {
+    background: var(--grad);
+    color: #07080c;
+    box-shadow: 0 8px 30px -12px rgba(176, 140, 255, 0.6);
+  }
+  .btn.primary:hover { transform: translateY(-1px); box-shadow: 0 14px 40px -12px rgba(176, 140, 255, 0.7); }
+  .btn.ghost {
+    background: transparent;
+    color: var(--fg-0);
+    border-color: var(--line-2);
+  }
+  .btn.ghost:hover { background: var(--bg-2); }
+
+  .hero-grid {
+    margin-top: 64px;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+  .hero-grid .stat {
+    padding: 24px;
+    background: var(--bg-1);
+  }
+  .hero-grid .stat .num {
+    font-family: var(--mono);
+    font-size: 28px;
+    font-weight: 600;
+    background: var(--grad);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .hero-grid .stat .label {
+    font-size: 13px;
+    color: var(--fg-2);
+    margin-top: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  /* ---------- Generic card ---------- */
+  .card {
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 28px;
+    transition: border-color 0.15s ease, transform 0.15s ease;
+  }
+  .card:hover { border-color: var(--line-2); }
+
+  /* ---------- What is miru ---------- */
+  .what-grid {
+    display: grid;
+    grid-template-columns: 1.2fr 1fr;
+    gap: 32px;
+    align-items: start;
+  }
+  @media (max-width: 880px) { .what-grid { grid-template-columns: 1fr; } }
+  .what-grid .stack { display: flex; flex-direction: column; gap: 16px; }
+  .stack-item {
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+  }
+  .stack-item .icon {
+    width: 36px; height: 36px;
+    border-radius: 8px;
+    background: var(--bg-2);
+    border: 1px solid var(--line-2);
+    display: grid; place-items: center;
+    flex-shrink: 0;
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 14px;
+  }
+  .stack-item .body h3 { color: var(--fg-0); margin-bottom: 4px; }
+  .stack-item .body p { font-size: 14px; }
+
+  /* ---------- Feature cards ---------- */
+  .features {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+  @media (max-width: 980px) { .features { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 600px) { .features { grid-template-columns: 1fr; } }
+  .feature {
+    background: linear-gradient(180deg, var(--bg-1) 0%, var(--bg-2) 100%);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 24px;
+    position: relative;
+    overflow: hidden;
+    transition: transform 0.2s ease, border-color 0.2s ease;
+  }
+  .feature:hover { transform: translateY(-3px); border-color: var(--line-2); }
+  .feature::before {
+    content: "";
+    position: absolute; inset: -1px;
+    border-radius: inherit;
+    padding: 1px;
+    background: var(--grad);
+    -webkit-mask: linear-gradient(#000, #000) content-box, linear-gradient(#000, #000);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+    pointer-events: none;
+  }
+  .feature:hover::before { opacity: 1; }
+  .feature .glyph {
+    width: 44px; height: 44px;
+    border-radius: 10px;
+    display: grid; place-items: center;
+    background: var(--bg-3);
+    border: 1px solid var(--line-2);
+    margin-bottom: 18px;
+  }
+  .feature h3 { font-size: 16px; margin-bottom: 6px; }
+  .feature p { font-size: 14px; color: var(--fg-1); margin: 0; }
+
+  /* ---------- Demo console ---------- */
+  .demo-grid {
+    display: grid;
+    grid-template-columns: 1fr 1.4fr;
+    gap: 16px;
+    align-items: stretch;
+  }
+  @media (max-width: 980px) { .demo-grid { grid-template-columns: 1fr; } }
+  .demo-image {
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+  .demo-image .frame {
+    aspect-ratio: 1 / 1;
+    border-radius: 10px;
+    border: 1px solid var(--line-2);
+    background: #0a0c12;
+    position: relative;
+    overflow: hidden;
+  }
+  .demo-image canvas { width: 100%; height: 100%; display: block; }
+  .demo-image .question {
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 14px;
+    color: var(--fg-1);
+  }
+  .demo-image .question .label { color: var(--fg-2); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+  .demo-image .question .text { color: var(--fg-0); margin-top: 4px; }
+  .demo-image .controls { display: flex; gap: 10px; }
+
+  .demo-stream {
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .demo-stream .toolbar {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--bg-2);
+  }
+  .demo-stream .toolbar .endpoint { font-family: var(--mono); font-size: 13px; color: var(--fg-1); }
+  .demo-stream .toolbar .endpoint .verb { color: var(--green); font-weight: 600; margin-right: 8px; }
+  .demo-stream .toolbar .status {
+    font-size: 12px;
+    color: var(--fg-2);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .demo-stream .toolbar .status .light {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--fg-2); transition: background 0.2s ease, box-shadow 0.2s ease;
+  }
+  .demo-stream .toolbar .status.live .light {
+    background: var(--green);
+    box-shadow: 0 0 0 4px rgba(105, 232, 150, 0.15);
+  }
+  .demo-stream .toolbar .status.done .light {
+    background: var(--accent);
+    box-shadow: 0 0 0 4px rgba(122, 215, 255, 0.15);
+  }
+  .demo-stream .body {
+    padding: 18px;
+    flex: 1;
+    min-height: 360px;
+    font-family: var(--mono);
+    font-size: 13px;
+    overflow-y: auto;
+    max-height: 480px;
+  }
+  .sse-line {
+    display: grid;
+    grid-template-columns: 80px 1fr;
+    gap: 14px;
+    padding: 8px 0;
+    border-bottom: 1px dashed var(--line);
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity 0.25s ease, transform 0.25s ease;
+  }
+  .sse-line.visible { opacity: 1; transform: translateY(0); }
+  .sse-line .ev {
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .sse-line.step .ev { color: var(--accent); }
+  .sse-line.trace .ev { color: var(--warm); }
+  .sse-line.done .ev { color: var(--green); }
+  .sse-line .data { color: var(--fg-0); }
+  .sse-line .data .key { color: var(--fg-2); }
+  .conf-bar {
+    display: inline-block;
+    width: 110px;
+    height: 6px;
+    background: var(--bg-3);
+    border-radius: 3px;
+    overflow: hidden;
+    vertical-align: middle;
+    margin-left: 10px;
+  }
+  .conf-bar .fill {
+    height: 100%;
+    background: var(--grad);
+    width: 0%;
+    transition: width 0.4s ease;
+  }
+  .final-card {
+    margin-top: 20px;
+    padding: 16px;
+    border-radius: 10px;
+    background: linear-gradient(180deg, rgba(176, 140, 255, 0.1), rgba(122, 215, 255, 0.06));
+    border: 1px solid var(--line-2);
+    display: none;
+  }
+  .final-card.visible { display: block; }
+  .final-card .answer { font-size: 15px; color: var(--fg-0); margin-bottom: 10px; }
+  .final-card .meta {
+    display: flex; gap: 18px;
+    font-family: var(--mono); font-size: 12px;
+    color: var(--fg-2);
+  }
+  .final-card .meta .v { color: var(--fg-0); }
+
+  /* ---------- Trace viewer ---------- */
+  .traces-wrap {
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+  .traces-wrap .head {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--bg-2);
+  }
+  .traces-wrap .head .file { font-family: var(--mono); font-size: 13px; color: var(--fg-1); }
+  .trace-row {
+    border-bottom: 1px solid var(--line);
+    transition: background 0.15s ease;
+  }
+  .trace-row:last-child { border-bottom: none; }
+  .trace-row .summary {
+    display: grid;
+    grid-template-columns: 180px 1fr 90px 100px 30px;
+    gap: 16px;
+    padding: 14px 20px;
+    align-items: center;
+    cursor: pointer;
+    font-size: 14px;
+  }
+  .trace-row .summary:hover { background: var(--bg-2); }
+  .trace-row .summary .ts {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--fg-2);
+  }
+  .trace-row .summary .answer {
+    color: var(--fg-0);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .trace-row .summary .backend {
+    font-family: var(--mono); font-size: 12px;
+    color: var(--accent);
+  }
+  .trace-row .summary .latency {
+    font-family: var(--mono); font-size: 12px;
+    color: var(--warm);
+    text-align: right;
+  }
+  .trace-row .summary .chev { color: var(--fg-2); transition: transform 0.2s ease; }
+  .trace-row.open .summary .chev { transform: rotate(90deg); color: var(--accent); }
+  .trace-row .detail {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease;
+    background: var(--bg-0);
+  }
+  .trace-row.open .detail { max-height: 600px; }
+  .trace-row .detail-inner { padding: 16px 20px; border-top: 1px solid var(--line); }
+  .trace-row .detail-inner pre {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--fg-1);
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .trace-row .detail-inner .privacy {
+    margin-bottom: 10px;
+    display: flex; gap: 14px; flex-wrap: wrap;
+    font-size: 12px;
+  }
+  .privacy-chip {
+    display: inline-flex; gap: 6px; align-items: center;
+    padding: 4px 10px;
+    background: rgba(105, 232, 150, 0.08);
+    border: 1px solid rgba(105, 232, 150, 0.25);
+    color: var(--green);
+    border-radius: 999px;
+  }
+  .privacy-chip.warn {
+    background: rgba(255, 138, 211, 0.06);
+    border-color: rgba(255, 138, 211, 0.25);
+    color: var(--accent-3);
+  }
+
+  /* ---------- Architecture ---------- */
+  .arch {
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 32px;
+    overflow-x: auto;
+  }
+  .arch svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+
+  /* ---------- Code blocks ---------- */
+  .code-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  @media (max-width: 880px) { .code-grid { grid-template-columns: 1fr; } }
+  .code {
+    background: #06080d;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .code .hd {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px;
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--line);
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--fg-2);
+  }
+  .code .hd .lang { color: var(--accent); }
+  .code .hd .dots { display: flex; gap: 5px; }
+  .code .hd .dots span {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--bg-3);
+  }
+  .code .hd .dots span:nth-child(1) { background: #e36e74; }
+  .code .hd .dots span:nth-child(2) { background: #e3c46e; }
+  .code .hd .dots span:nth-child(3) { background: #6ee388; }
+  .code pre {
+    margin: 0;
+    padding: 18px;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.55;
+    color: var(--fg-0);
+    overflow-x: auto;
+  }
+  .code .kw { color: var(--accent-2); }
+  .code .str { color: var(--cool); }
+  .code .com { color: var(--fg-2); font-style: italic; }
+  .code .num { color: var(--warm); }
+  .code .fn  { color: var(--accent); }
+  .code .typ { color: var(--accent-3); }
+
+  /* ---------- Footer ---------- */
+  footer {
+    padding: 64px 0 80px;
+    border-top: 1px solid var(--line);
+    margin-top: 64px;
+  }
+  footer .row {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 13px; color: var(--fg-2);
+  }
+
+  /* ---------- Section heading helpers ---------- */
+  .section-eyebrow {
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+</style>
+</head>
+<body>
+
+<!-- ==================== NAV ==================== -->
+<nav class="top">
+  <div class="container row">
+    <div class="brand">
+      <span class="dot"></span>
+      <span>Miru <span class="muted" style="font-weight:400">/見る/</span></span>
+    </div>
+    <div class="links">
+      <a href="#what">What is it?</a>
+      <a href="#features">Features</a>
+      <a href="#demo">Demo</a>
+      <a href="#traces">Traces</a>
+      <a href="#arch">Architecture</a>
+      <a href="https://github.com/konjoai/miru">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ==================== HERO ==================== -->
+<section class="hero">
+  <div class="container">
+    <span class="eyebrow"><span class="pulse"></span> v0.5.0 — multimodal reasoning tracer</span>
+    <h1>Visual language model inference<br/>with <span class="gradient-text">streaming reasoning</span> and audit trails.</h1>
+    <p class="lead">
+      Miru runs vision-language model inference, streams the reasoning step-by-step, overlays attention onto the image, and persists every trace as a privacy-safe JSONL — image bytes never leave the boundary.
+    </p>
+    <div class="ctas">
+      <a class="btn primary" href="#demo">Try the live demo →</a>
+      <a class="btn ghost" href="#arch">See the architecture</a>
+    </div>
+
+    <div class="hero-grid">
+      <div class="stat">
+        <div class="num">3</div>
+        <div class="label">REST endpoints</div>
+      </div>
+      <div class="stat">
+        <div class="num">SSE</div>
+        <div class="label">step-by-step streaming</div>
+      </div>
+      <div class="stat">
+        <div class="num">SHA-256</div>
+        <div class="label">image-only hash on disk</div>
+      </div>
+      <div class="stat">
+        <div class="num">100/100</div>
+        <div class="label">tests passing</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== WHAT IS MIRU ==================== -->
+<section id="what">
+  <div class="container">
+    <div class="section-eyebrow">// What is miru</div>
+    <h2>Multimodal models are black boxes. <span class="gradient-text">Miru opens them.</span></h2>
+    <p style="max-width: 760px; font-size: 17px; margin-bottom: 36px;">
+      Built on FastAPI, Miru is an explainability layer in front of any vision-language backend (CLIP shipped, LLaVA on the roadmap). It exposes a single REST surface for inference and produces a structured reasoning trace, an attention map, and an optional PNG overlay — for every request.
+    </p>
+
+    <div class="what-grid">
+      <div class="stack">
+        <div class="stack-item">
+          <div class="icon">①</div>
+          <div class="body">
+            <h3>Pluggable backends, one interface</h3>
+            <p>A <code>VLMBackend</code> registry mounts CLIP today and any future VLM tomorrow. The same FastAPI surface routes to whichever backend is requested — clients don't care which model produced the trace.</p>
+          </div>
+        </div>
+        <div class="stack-item">
+          <div class="icon">②</div>
+          <div class="body">
+            <h3>Server-Sent Events for live reasoning</h3>
+            <p><code>POST /analyze/stream</code> emits <code>step</code> events as the model produces each reasoning step, then a final <code>trace</code> event byte-equivalent to the synchronous endpoint. Keepalive comments hold the connection open behind any proxy.</p>
+          </div>
+        </div>
+        <div class="stack-item">
+          <div class="icon">③</div>
+          <div class="body">
+            <h3>Privacy-safe persistence</h3>
+            <p>Set <code>MIRU_RECORD=1</code> and every trace lands as JSONL. Raw image bytes never touch disk — only a SHA-256 hash. The overlay PNG is stripped before write. Local FS, S3, GCS, anything fsspec speaks.</p>
+          </div>
+        </div>
+        <div class="stack-item">
+          <div class="icon">④</div>
+          <div class="body">
+            <h3>Built for fine-tuning pipelines</h3>
+            <p>Recorded JSONL is ready for downstream training. <code>miru record export --format csv</code> flattens to a fine-tunable schema in one command. Per-batch immutable files are object-storage-native.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div style="font-family: var(--mono); font-size: 12px; color: var(--fg-2); margin-bottom: 12px;">// quickstart</div>
+<pre style="margin:0; font-family: var(--mono); font-size: 13px; line-height: 1.7; color: var(--fg-0);"><span class="muted"># start the API</span>
+$ uvicorn miru.main:app
+
+<span class="muted"># single-shot inference</span>
+$ curl -X POST localhost:8000/analyze \
+    -d '{"image_b64":"…","question":"?"}' \
+    -H "Content-Type: application/json"
+
+<span class="muted"># streaming reasoning</span>
+$ curl -N localhost:8000/analyze/stream \
+    -d '{"image_b64":"…","question":"?"}' \
+    -H "Content-Type: application/json"
+
+<span class="muted"># persist every trace</span>
+$ MIRU_RECORD=1 uvicorn miru.main:app
+
+$ miru record list
+$ miru record export --out data.jsonl</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== FEATURES ==================== -->
+<section id="features">
+  <div class="container">
+    <div class="section-eyebrow">// Capabilities</div>
+    <h2>Everything you need, nothing you don't.</h2>
+    <p style="max-width:660px; margin-bottom: 36px;">Five primitives. Production-grade. Zero abstractions you didn't ask for.</p>
+
+    <div class="features">
+      <div class="feature">
+        <div class="glyph">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#7ad7ff" stroke-width="1.6">
+            <rect x="3" y="3" width="18" height="18" rx="2"/>
+            <circle cx="9" cy="9" r="1.5"/>
+            <path d="M3 17l6-5 5 4 7-7"/>
+          </svg>
+        </div>
+        <h3>Image Analysis</h3>
+        <p>Pluggable VLM backends behind a single <code>VLMBackend</code> interface. CLIP ViT shipped. Mock backend for tests. Lazy weight load on first call — no startup penalty.</p>
+      </div>
+
+      <div class="feature">
+        <div class="glyph">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#b08cff" stroke-width="1.6">
+            <path d="M3 12h4l2-7 4 14 2-7h6"/>
+          </svg>
+        </div>
+        <h3>SSE Streaming</h3>
+        <p>Server-Sent Events deliver each reasoning step the moment it's available. Keepalive frames, configurable per-request timeout, clean error events on backend failure.</p>
+      </div>
+
+      <div class="feature">
+        <div class="glyph">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ff8ad3" stroke-width="1.6">
+            <ellipse cx="12" cy="5" rx="9" ry="3"/>
+            <path d="M3 5v6c0 1.7 4 3 9 3s9-1.3 9-3V5"/>
+            <path d="M3 11v6c0 1.7 4 3 9 3s9-1.3 9-3v-6"/>
+          </svg>
+        </div>
+        <h3>Dataset Recorder</h3>
+        <p>Threaded JSONL writer. Per-batch immutable files for object-storage compatibility. Local, S3, GCS, memory — anything fsspec opens.</p>
+      </div>
+
+      <div class="feature">
+        <div class="glyph">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#69e896" stroke-width="1.6">
+            <path d="M12 2l8 4v6c0 5-3.5 9-8 10-4.5-1-8-5-8-10V6z"/>
+            <path d="M9 12l2 2 4-4"/>
+          </svg>
+        </div>
+        <h3>Privacy-safe Traces</h3>
+        <p>Raw image bytes never persisted. SHA-256 hash only. Overlay PNG stripped before write. Errors in the recorder never propagate to the request path.</p>
+      </div>
+
+      <div class="feature">
+        <div class="glyph">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#f6c177" stroke-width="1.6">
+            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/>
+            <circle cx="12" cy="12" r="3"/>
+          </svg>
+        </div>
+        <h3>Overlay Support</h3>
+        <p>Pass <code>?overlay=true</code> and the response carries a base64 PNG with a bilinearly upsampled attention heatmap blended over the source image. Pure-NumPy + Pillow, no matplotlib.</p>
+      </div>
+
+      <div class="feature">
+        <div class="glyph">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#6ed6c4" stroke-width="1.6">
+            <rect x="4" y="4" width="16" height="16" rx="2"/>
+            <path d="M4 9h16M9 4v16"/>
+          </svg>
+        </div>
+        <h3>Built for the CLI</h3>
+        <p><code>miru record list</code> and <code>miru record export --format jsonl|csv</code> turn recorded data into something a fine-tuning script can consume in one line.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== INTERACTIVE DEMO ==================== -->
+<section id="demo">
+  <div class="container">
+    <div class="section-eyebrow">// Interactive demo</div>
+    <h2>Watch a reasoning trace materialise <span class="gradient-text">live</span>.</h2>
+    <p style="max-width: 660px; margin-bottom: 36px;">
+      Click <em>Analyze</em>. You'll see a simulated SSE stream: each reasoning step lands one at a time, with confidence bars filling in. The final trace event closes the stream with the model's answer and latency.
+    </p>
+
+    <div class="demo-grid">
+      <div class="demo-image">
+        <div class="frame">
+          <canvas id="demo-canvas" width="320" height="320"></canvas>
+        </div>
+        <div class="question">
+          <div class="label">question</div>
+          <div class="text" id="demo-question">What is the dominant subject of this image?</div>
+        </div>
+        <div class="controls">
+          <button class="btn primary" id="btn-analyze">Analyze</button>
+          <button class="btn ghost" id="btn-reset">Reset</button>
+        </div>
+      </div>
+
+      <div class="demo-stream">
+        <div class="toolbar">
+          <div class="endpoint"><span class="verb">POST</span>/analyze/stream</div>
+          <div class="status" id="stream-status">
+            <span class="light"></span>
+            <span class="text">idle</span>
+          </div>
+        </div>
+        <div class="body" id="stream-body">
+          <div class="muted" style="text-align:center; padding: 60px 20px; font-family: var(--mono); font-size: 13px;">
+            ▌ stream idle — click Analyze to begin
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== TRACE VIEWER ==================== -->
+<section id="traces">
+  <div class="container">
+    <div class="section-eyebrow">// Trace viewer</div>
+    <h2>Every request lands as <span class="gradient-text">privacy-safe JSONL</span>.</h2>
+    <p style="max-width: 660px; margin-bottom: 36px;">
+      A simulated <code>traces-20260502T130000-000000.jsonl</code> from the recorder. Click any row to expand the stored record. Note the <em>image_sha256</em> chip: the bytes are gone, only the digest remains.
+    </p>
+
+    <div class="traces-wrap">
+      <div class="head">
+        <div class="file">📄 traces-20260502T130000-000000.jsonl</div>
+        <div class="muted" style="font-family: var(--mono); font-size: 12px;">5 records · 4.2 KB</div>
+      </div>
+      <div id="traces-list"></div>
+    </div>
+
+    <div style="margin-top: 24px; display: flex; gap: 12px; flex-wrap: wrap;">
+      <span class="privacy-chip">✓ raw image_b64 · stripped</span>
+      <span class="privacy-chip">✓ overlay_b64 · stripped</span>
+      <span class="privacy-chip">✓ image_sha256 · stored</span>
+      <span class="privacy-chip warn">⚠ question · stored verbatim</span>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== ARCHITECTURE ==================== -->
+<section id="arch">
+  <div class="container">
+    <div class="section-eyebrow">// Architecture</div>
+    <h2>Six stages. <span class="gradient-text">No magic.</span></h2>
+    <p style="max-width: 660px; margin-bottom: 36px;">An image and a question come in. A trace, a stream, and a JSONL line go out.</p>
+
+    <div class="arch">
+      <svg viewBox="0 0 1100 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Miru request lifecycle">
+        <defs>
+          <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="#7ad7ff"/>
+            <stop offset="100%" stop-color="#b08cff"/>
+          </linearGradient>
+          <linearGradient id="g2" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="#b08cff"/>
+            <stop offset="100%" stop-color="#ff8ad3"/>
+          </linearGradient>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0,0 L10,5 L0,10 z" fill="#a3a9bd"/>
+          </marker>
+        </defs>
+
+        <!-- nodes -->
+        <g font-family="ui-monospace, monospace" font-size="13" fill="#e7eaf2">
+          <!-- 1: Image -->
+          <g transform="translate(40,140)">
+            <rect width="130" height="80" rx="10" fill="#0d0f15" stroke="#2e3346"/>
+            <text x="65" y="32" text-anchor="middle" font-weight="600">Image + Q</text>
+            <text x="65" y="52" text-anchor="middle" fill="#6b7088" font-size="11">image_b64</text>
+            <text x="65" y="68" text-anchor="middle" fill="#6b7088" font-size="11">question</text>
+          </g>
+
+          <!-- 2: API -->
+          <g transform="translate(220,140)">
+            <rect width="140" height="80" rx="10" fill="#0d0f15" stroke="url(#g1)"/>
+            <text x="70" y="32" text-anchor="middle" font-weight="600" fill="#7ad7ff">FastAPI</text>
+            <text x="70" y="52" text-anchor="middle" fill="#a3a9bd" font-size="11">/analyze</text>
+            <text x="70" y="68" text-anchor="middle" fill="#a3a9bd" font-size="11">/analyze/stream</text>
+          </g>
+
+          <!-- 3: Backend -->
+          <g transform="translate(410,140)">
+            <rect width="140" height="80" rx="10" fill="#0d0f15" stroke="url(#g1)"/>
+            <text x="70" y="32" text-anchor="middle" font-weight="600" fill="#b08cff">VLM Backend</text>
+            <text x="70" y="52" text-anchor="middle" fill="#a3a9bd" font-size="11">CLIP · LLaVA · …</text>
+            <text x="70" y="68" text-anchor="middle" fill="#a3a9bd" font-size="11">attention weights</text>
+          </g>
+
+          <!-- 4: Tracer -->
+          <g transform="translate(600,140)">
+            <rect width="140" height="80" rx="10" fill="#0d0f15" stroke="url(#g2)"/>
+            <text x="70" y="32" text-anchor="middle" font-weight="600" fill="#ff8ad3">ReasoningTracer</text>
+            <text x="70" y="52" text-anchor="middle" fill="#a3a9bd" font-size="11">steps · confidence</text>
+            <text x="70" y="68" text-anchor="middle" fill="#a3a9bd" font-size="11">heatmap · overlay</text>
+          </g>
+
+          <!-- 5a: SSE -->
+          <g transform="translate(800,40)">
+            <rect width="160" height="80" rx="10" fill="#0d0f15" stroke="#2e3346"/>
+            <text x="80" y="32" text-anchor="middle" font-weight="600" fill="#7ad7ff">SSE Stream</text>
+            <text x="80" y="52" text-anchor="middle" fill="#a3a9bd" font-size="11">step → step → …</text>
+            <text x="80" y="68" text-anchor="middle" fill="#a3a9bd" font-size="11">trace · done</text>
+          </g>
+
+          <!-- 5b: Recorder -->
+          <g transform="translate(800,150)">
+            <rect width="160" height="80" rx="10" fill="#0d0f15" stroke="#2e3346"/>
+            <text x="80" y="32" text-anchor="middle" font-weight="600" fill="#69e896">JSON response</text>
+            <text x="80" y="52" text-anchor="middle" fill="#a3a9bd" font-size="11">answer · steps</text>
+            <text x="80" y="68" text-anchor="middle" fill="#a3a9bd" font-size="11">attention_map</text>
+          </g>
+
+          <!-- 6: JSONL -->
+          <g transform="translate(800,260)">
+            <rect width="160" height="80" rx="10" fill="#0d0f15" stroke="#2e3346"/>
+            <text x="80" y="32" text-anchor="middle" font-weight="600" fill="#f6c177">TraceRecorder</text>
+            <text x="80" y="52" text-anchor="middle" fill="#a3a9bd" font-size="11">JSONL @ MIRU_RECORD_PATH</text>
+            <text x="80" y="68" text-anchor="middle" fill="#a3a9bd" font-size="11">sha256 only · no bytes</text>
+          </g>
+        </g>
+
+        <!-- edges -->
+        <g fill="none" stroke="#a3a9bd" stroke-width="1.4" marker-end="url(#arrow)">
+          <line x1="170" y1="180" x2="218" y2="180"/>
+          <line x1="360" y1="180" x2="408" y2="180"/>
+          <line x1="550" y1="180" x2="598" y2="180"/>
+          <path d="M740 180 L780 80"/>
+          <line x1="740" y1="180" x2="798" y2="190"/>
+          <path d="M740 180 L780 290"/>
+        </g>
+
+        <!-- edge labels -->
+        <g font-family="ui-monospace, monospace" font-size="10" fill="#6b7088">
+          <text x="187" y="175">POST</text>
+          <text x="377" y="175">infer()</text>
+          <text x="567" y="175">VLMOutput</text>
+          <text x="755" y="125">stream</text>
+          <text x="755" y="245">enqueue</text>
+        </g>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== CODE ==================== -->
+<section id="code">
+  <div class="container">
+    <div class="section-eyebrow">// Code</div>
+    <h2>Two languages, both terse.</h2>
+    <p style="margin-bottom: 32px;">From the CLI or from your browser.</p>
+
+    <div class="code-grid">
+      <div class="code">
+        <div class="hd">
+          <div class="dots"><span></span><span></span><span></span></div>
+          <div><span class="lang">python</span></div>
+        </div>
+<pre><span class="kw">from</span> miru <span class="kw">import</span> MockVLMBackend, ReasoningTracer
+<span class="kw">import</span> numpy <span class="kw">as</span> np
+
+backend = <span class="fn">MockVLMBackend</span>()
+tracer  = <span class="fn">ReasoningTracer</span>()
+
+image = np.<span class="fn">zeros</span>((<span class="num">8</span>, <span class="num">8</span>, <span class="num">3</span>), dtype=np.float32)
+out   = backend.<span class="fn">infer</span>(image, <span class="str">"What is shown?"</span>)
+
+trace = tracer.<span class="fn">trace</span>(out, backend.name, latency_ms=<span class="num">0.0</span>)
+<span class="fn">print</span>(trace.answer)
+<span class="fn">print</span>(trace.steps)            <span class="com"># [ReasoningStep(...), ...]</span>
+<span class="fn">print</span>(trace.attention_map)    <span class="com"># 16×16 normalized heatmap</span></pre>
+      </div>
+
+      <div class="code">
+        <div class="hd">
+          <div class="dots"><span></span><span></span><span></span></div>
+          <div><span class="lang">javascript</span></div>
+        </div>
+<pre><span class="kw">const</span> resp = <span class="kw">await</span> <span class="fn">fetch</span>(<span class="str">"/analyze/stream"</span>, {
+  method: <span class="str">"POST"</span>,
+  headers: { <span class="str">"Content-Type"</span>: <span class="str">"application/json"</span> },
+  body: <span class="fn">JSON</span>.<span class="fn">stringify</span>({ image_b64, question })
+});
+
+<span class="kw">const</span> reader = resp.body.<span class="fn">getReader</span>();
+<span class="kw">while</span> (<span class="num">true</span>) {
+  <span class="kw">const</span> { value, done } = <span class="kw">await</span> reader.<span class="fn">read</span>();
+  <span class="kw">if</span> (done) <span class="kw">break</span>;
+  <span class="com">// SSE frame: parse event/data and render</span>
+  <span class="fn">render</span>(<span class="fn">parseSSE</span>(value));
+}</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== FOOTER ==================== -->
+<footer>
+  <div class="container row">
+    <div>Miru — built with <span class="gradient-text">root + grit + the fighting spirit</span>. <span class="muted">BUSL-1.1</span></div>
+    <div class="muted">ቆንጆ · 根性 · 康宙 · কুঞ্জ</div>
+  </div>
+</footer>
+
+<script>
+/* ============================================================
+   Background image — deterministic procedural texture so the
+   demo always shows something on the canvas without any HTTP.
+   ============================================================ */
+(function paintImage() {
+  const canvas = document.getElementById("demo-canvas");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  const img = ctx.createImageData(W, H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      const cx = x - W / 2, cy = y - H / 2;
+      const r = Math.sqrt(cx * cx + cy * cy);
+      const angle = Math.atan2(cy, cx);
+      const ring = Math.sin(r * 0.06) * 0.5 + 0.5;
+      const arm  = Math.sin(angle * 4 + r * 0.04) * 0.5 + 0.5;
+      const v = Math.pow(ring * 0.55 + arm * 0.45, 1.4);
+      img.data[i + 0] = Math.floor(34 + v * 220);
+      img.data[i + 1] = Math.floor(70 + v * 120 + Math.sin(x * 0.03) * 30);
+      img.data[i + 2] = Math.floor(140 + (1 - v) * 80);
+      img.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+
+  /* attention overlay layer is drawn on top during analysis */
+})();
+
+/* ============================================================
+   Simulated SSE stream
+   ============================================================ */
+const STREAM_BODY = document.getElementById("stream-body");
+const STREAM_STATUS = document.getElementById("stream-status");
+const BTN_ANALYZE = document.getElementById("btn-analyze");
+const BTN_RESET   = document.getElementById("btn-reset");
+
+const REASONING = [
+  { description: "Decoded image → 8×8×3 float32 tensor.",                 confidence: 0.96 },
+  { description: "Forward pass through ViT encoder; collected per-layer attention.", confidence: 0.94 },
+  { description: "Aggregated [CLS] attention across heads; normalised to 16×16 grid.", confidence: 0.91 },
+  { description: "Identified salient foreground region in upper-left quadrant.",  confidence: 0.88 },
+  { description: "Cross-referenced texture and chroma against question embedding.", confidence: 0.85 },
+  { description: "Synthesised step-level evidence into final answer.",             confidence: 0.82 },
+];
+const FINAL_ANSWER = "A radial pattern with a bright central core, suggestive of a structured artificial light source.";
+
+function setStatus(state, text) {
+  STREAM_STATUS.classList.remove("live", "done");
+  if (state) STREAM_STATUS.classList.add(state);
+  STREAM_STATUS.querySelector(".text").textContent = text;
+}
+
+function clearStream() {
+  STREAM_BODY.innerHTML =
+    '<div class="muted" style="text-align:center; padding: 60px 20px; font-family: var(--mono); font-size: 13px;">▌ stream idle — click Analyze to begin</div>';
+  setStatus(null, "idle");
+  // wipe overlay if present
+  const canvas = document.getElementById("demo-canvas");
+  if (canvas && canvas.dataset.overlayed === "1") {
+    canvas.dataset.overlayed = "0";
+    paintImageReset();
+  }
+}
+
+function paintImageReset() {
+  // re-run the IIFE-equivalent
+  const canvas = document.getElementById("demo-canvas");
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  const img = ctx.createImageData(W, H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      const cx = x - W / 2, cy = y - H / 2;
+      const r = Math.sqrt(cx * cx + cy * cy);
+      const angle = Math.atan2(cy, cx);
+      const ring = Math.sin(r * 0.06) * 0.5 + 0.5;
+      const arm  = Math.sin(angle * 4 + r * 0.04) * 0.5 + 0.5;
+      const v = Math.pow(ring * 0.55 + arm * 0.45, 1.4);
+      img.data[i + 0] = Math.floor(34 + v * 220);
+      img.data[i + 1] = Math.floor(70 + v * 120 + Math.sin(x * 0.03) * 30);
+      img.data[i + 2] = Math.floor(140 + (1 - v) * 80);
+      img.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function paintAttentionOverlay() {
+  const canvas = document.getElementById("demo-canvas");
+  if (!canvas) return;
+  canvas.dataset.overlayed = "1";
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  const overlay = ctx.createImageData(W, H);
+  // 2D Gaussian peaked in the upper-left quadrant (matches REASONING text).
+  const cx = W * 0.32, cy = H * 0.30;
+  const sigma = W * 0.22;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const dx = x - cx, dy = y - cy;
+      const w = Math.exp(-(dx * dx + dy * dy) / (2 * sigma * sigma));
+      const i = (y * W + x) * 4;
+      // jet-ish ramp mapped to alpha
+      const r = Math.min(255, Math.floor(40 + w * 220));
+      const g = Math.min(255, Math.floor(20 + (1 - Math.abs(0.5 - w) * 2) * 220));
+      const b = Math.min(255, Math.floor(255 - w * 200));
+      overlay.data[i] = r;
+      overlay.data[i+1] = g;
+      overlay.data[i+2] = b;
+      overlay.data[i+3] = Math.floor(w * 170);
+    }
+  }
+  // composite
+  const offscreen = document.createElement("canvas");
+  offscreen.width = W; offscreen.height = H;
+  offscreen.getContext("2d").putImageData(overlay, 0, 0);
+  ctx.globalCompositeOperation = "lighter";
+  ctx.drawImage(offscreen, 0, 0);
+  ctx.globalCompositeOperation = "source-over";
+}
+
+function appendStepLine(stepNum, description, confidence) {
+  const line = document.createElement("div");
+  line.className = "sse-line step";
+  line.innerHTML = `
+    <div class="ev">step</div>
+    <div class="data">
+      <span class="key">#${stepNum}</span>
+      ${description}
+      <span class="conf-bar"><span class="fill"></span></span>
+      <span class="key" style="margin-left:6px;">${confidence.toFixed(2)}</span>
+    </div>`;
+  STREAM_BODY.appendChild(line);
+  // animate
+  requestAnimationFrame(() => {
+    line.classList.add("visible");
+    line.querySelector(".conf-bar .fill").style.width = (confidence * 100).toFixed(0) + "%";
+  });
+  STREAM_BODY.scrollTop = STREAM_BODY.scrollHeight;
+}
+
+function appendTraceLine(answer, latencyMs) {
+  const line = document.createElement("div");
+  line.className = "sse-line trace";
+  line.innerHTML = `
+    <div class="ev">trace</div>
+    <div class="data">
+      <span class="key">answer:</span> ${answer}
+      <div class="final-card visible" style="margin-top:14px;">
+        <div class="answer">${answer}</div>
+        <div class="meta">
+          <div><span>latency</span> · <span class="v">${latencyMs.toFixed(2)} ms</span></div>
+          <div><span>backend</span> · <span class="v">mock</span></div>
+          <div><span>steps</span> · <span class="v">${REASONING.length}</span></div>
+          <div><span>attention</span> · <span class="v">16×16</span></div>
+        </div>
+      </div>
+    </div>`;
+  STREAM_BODY.appendChild(line);
+  requestAnimationFrame(() => line.classList.add("visible"));
+  STREAM_BODY.scrollTop = STREAM_BODY.scrollHeight;
+}
+
+function appendDoneLine() {
+  const line = document.createElement("div");
+  line.className = "sse-line done";
+  line.innerHTML = `<div class="ev">done</div><div class="data muted">stream closed cleanly · {}</div>`;
+  STREAM_BODY.appendChild(line);
+  requestAnimationFrame(() => line.classList.add("visible"));
+  STREAM_BODY.scrollTop = STREAM_BODY.scrollHeight;
+}
+
+async function runStream() {
+  STREAM_BODY.innerHTML = "";
+  setStatus("live", "streaming…");
+  BTN_ANALYZE.disabled = true;
+  BTN_ANALYZE.style.opacity = "0.5";
+
+  const t0 = performance.now();
+  for (let i = 0; i < REASONING.length; i++) {
+    await new Promise(r => setTimeout(r, 380));
+    appendStepLine(i + 1, REASONING[i].description, REASONING[i].confidence);
+    if (i === 2) paintAttentionOverlay();
+  }
+  await new Promise(r => setTimeout(r, 280));
+  const dt = performance.now() - t0;
+  appendTraceLine(FINAL_ANSWER, dt);
+  await new Promise(r => setTimeout(r, 220));
+  appendDoneLine();
+  setStatus("done", `complete · ${dt.toFixed(0)}ms`);
+  BTN_ANALYZE.disabled = false;
+  BTN_ANALYZE.style.opacity = "1";
+}
+
+BTN_ANALYZE.addEventListener("click", runStream);
+BTN_RESET.addEventListener("click", clearStream);
+
+/* ============================================================
+   Trace viewer — synthetic JSONL-style records
+   ============================================================ */
+const TRACES = [
+  {
+    ts: "2026-05-02T13:00:00.118432+00:00",
+    question: "What is the dominant subject of this image?",
+    image_sha256: "9a48e1c98c6a5f62c8dfa7736ff0900724f992168e32785c2a8d51f6a1f6abc1",
+    trace: {
+      answer: "A radial pattern with a bright central core.",
+      backend: "mock",
+      latency_ms: 0.43,
+      steps: [
+        { step: 1, description: "Decoded image → 8×8×3 tensor.", confidence: 0.96 },
+        { step: 2, description: "Forward pass through ViT encoder.", confidence: 0.94 },
+        { step: 3, description: "Synthesised final answer.", confidence: 0.91 },
+      ]
+    }
+  },
+  {
+    ts: "2026-05-02T13:00:01.402198+00:00",
+    question: "Are there any people present?",
+    image_sha256: "1e7c0aab2933f2bc1cd8e30c5e0c2bea9f7af0e2c1f2d9ab30c7e98a89bc0123",
+    trace: {
+      answer: "No human figures detected.",
+      backend: "mock",
+      latency_ms: 0.39,
+      steps: [
+        { step: 1, description: "Identified salient regions.", confidence: 0.92 },
+        { step: 2, description: "Cross-referenced with face/body templates.", confidence: 0.86 },
+        { step: 3, description: "Synthesised final answer.", confidence: 0.83 },
+      ]
+    }
+  },
+  {
+    ts: "2026-05-02T13:00:02.875991+00:00",
+    question: "Describe the lighting conditions.",
+    image_sha256: "44a30b88ad4cb5f0c3d7b1ee92baf07a5b5e6fbbc7e0a8429aa12c33d0e1abc2",
+    trace: {
+      answer: "Bright central source with radial falloff — likely artificial.",
+      backend: "mock",
+      latency_ms: 0.51,
+      steps: [
+        { step: 1, description: "Histogram analysis of luminance channel.", confidence: 0.94 },
+        { step: 2, description: "Detected radial intensity gradient.", confidence: 0.90 },
+        { step: 3, description: "Synthesised final answer.", confidence: 0.87 },
+      ]
+    }
+  },
+  {
+    ts: "2026-05-02T13:00:04.013447+00:00",
+    question: "Estimate the time of day.",
+    image_sha256: "2c5ea7b9f04d3e1bcd8f4019bb31ee0d220b1a65a02a8e76d1f8c45a90f9cd34",
+    trace: {
+      answer: "Indeterminate — image lacks natural sky reference.",
+      backend: "mock",
+      latency_ms: 0.41,
+      steps: [
+        { step: 1, description: "Searched for sky region — none found.", confidence: 0.83 },
+        { step: 2, description: "Examined shadow gradient.", confidence: 0.79 },
+        { step: 3, description: "Synthesised final answer.", confidence: 0.76 },
+      ]
+    }
+  },
+  {
+    ts: "2026-05-02T13:00:05.220183+00:00",
+    question: "What color dominates the upper region?",
+    image_sha256: "6b9f013e2a4c5d8e7f10293a8b4c6d7e9f021a3b4c5d6e7f8091a2b3c4d5e6f7",
+    trace: {
+      answer: "Magenta-violet, transitioning to teal.",
+      backend: "mock",
+      latency_ms: 0.46,
+      steps: [
+        { step: 1, description: "Cropped upper third of image.", confidence: 0.96 },
+        { step: 2, description: "Computed mean RGB and dominant hue.", confidence: 0.92 },
+        { step: 3, description: "Synthesised final answer.", confidence: 0.89 },
+      ]
+    }
+  }
+];
+
+const TRACES_LIST = document.getElementById("traces-list");
+TRACES.forEach((rec, idx) => {
+  const row = document.createElement("div");
+  row.className = "trace-row";
+  const tShort = rec.ts.split("T")[1].split("+")[0].split(".")[0];
+  const stripped = JSON.parse(JSON.stringify(rec));
+  // Stripped pretty-print exactly mirrors what the recorder writes (no overlay_b64)
+  row.innerHTML = `
+    <div class="summary">
+      <div class="ts">${tShort}</div>
+      <div class="answer">${rec.trace.answer}</div>
+      <div class="backend">${rec.trace.backend}</div>
+      <div class="latency">${rec.trace.latency_ms.toFixed(2)}ms</div>
+      <div class="chev">▸</div>
+    </div>
+    <div class="detail">
+      <div class="detail-inner">
+        <div class="privacy">
+          <span class="privacy-chip">image_sha256: ${rec.image_sha256.slice(0, 16)}…</span>
+          <span class="privacy-chip">no raw image bytes</span>
+          <span class="privacy-chip">no overlay_b64</span>
+        </div>
+        <pre>${JSON.stringify(stripped, null, 2)}</pre>
+      </div>
+    </div>`;
+  row.querySelector(".summary").addEventListener("click", () => row.classList.toggle("open"));
+  TRACES_LIST.appendChild(row);
+});
+
+/* ============================================================
+   Soft reveal on scroll (cards / features) — pure CSS would
+   need keyframes per element; do it once with IntersectionObserver.
+   ============================================================ */
+const reveal = new IntersectionObserver((entries) => {
+  for (const e of entries) {
+    if (e.isIntersecting) {
+      e.target.style.transition = "opacity 0.6s ease, transform 0.6s ease";
+      e.target.style.opacity = "1";
+      e.target.style.transform = "translateY(0)";
+      reveal.unobserve(e.target);
+    }
+  }
+}, { threshold: 0.08 });
+
+document.querySelectorAll(".feature, .stack-item, .card, .stat, .arch, .traces-wrap, .demo-grid > *").forEach((el) => {
+  el.style.opacity = "0";
+  el.style.transform = "translateY(12px)";
+  reveal.observe(el);
+});
+</script>
+</body>
+</html>
