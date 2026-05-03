@@ -24,3 +24,7 @@ build/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Demo server runtime artefacts
+demo/_traces/
+miru_traces/

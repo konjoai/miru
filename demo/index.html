@@ -943,6 +943,74 @@
     flex-wrap: wrap;
     gap: 16px;
   }
+
+  /* ============================================================
+     Live status banner + LIVE badges
+     ============================================================ */
+  .live-banner {
+    background: linear-gradient(90deg, rgba(255, 138, 211, 0.08), rgba(122, 215, 255, 0.06));
+    border-bottom: 1px solid var(--line);
+    padding: 10px 0;
+    font-family: var(--mono);
+    font-size: 13px;
+    transition: background .25s ease, border-color .25s ease;
+  }
+  .live-banner.connected {
+    background: linear-gradient(90deg, rgba(105, 232, 150, 0.12), rgba(122, 215, 255, 0.08));
+    border-bottom-color: rgba(105, 232, 150, 0.35);
+  }
+  .live-banner .row {
+    display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 12px;
+  }
+  .live-banner .lhs {
+    display: flex; align-items: center; gap: 12px;
+    color: var(--fg-1);
+  }
+  .live-banner.connected .lhs { color: var(--fg-0); }
+  .live-banner .pulse-dot {
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    background: var(--fg-3);
+    box-shadow: 0 0 0 0 transparent;
+  }
+  .live-banner.connected .pulse-dot {
+    background: var(--green);
+    animation: pulse 1.8s infinite;
+  }
+  .live-banner.error .pulse-dot { background: var(--hot); }
+  .live-banner .cmd {
+    color: var(--accent);
+    background: var(--bg-2);
+    padding: 3px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--line-2);
+  }
+  .live-banner .meta { font-size: 12px; color: var(--fg-2); }
+  .live-banner .meta b { color: var(--fg-0); font-weight: 500; }
+
+  .live-badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 2px 9px;
+    background: rgba(105, 232, 150, 0.14);
+    border: 1px solid rgba(105, 232, 150, 0.4);
+    color: var(--green);
+    border-radius: 999px;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    font-weight: 600;
+  }
+  .live-badge::before {
+    content: "";
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--green);
+    animation: blink 1.2s steps(2) infinite;
+  }
+  .answer-card.live { border-color: rgba(105, 232, 150, 0.35); }
+  .term-line.event-real .label { color: var(--green); }
 </style>
 </head>
 <body>
@@ -963,6 +1031,17 @@
     </div>
   </div>
 </nav>
+
+<!-- ==================== LIVE BANNER ==================== -->
+<div class="live-banner" id="live-banner">
+  <div class="container row">
+    <div class="lhs">
+      <span class="pulse-dot" id="live-dot"></span>
+      <span id="live-text">▶ Run <span class="cmd">python demo/server.py</span> to enable real Miru analysis</span>
+    </div>
+    <div class="meta" id="live-meta"></div>
+  </div>
+</div>
 
 <!-- ==================== HERO ==================== -->
 <section class="hero">
@@ -2122,6 +2201,421 @@ document.querySelectorAll(".what-card, .example, .stat, .privacy-callout, .arch,
   el.style.transform = "translateY(14px)";
   reveal.observe(el);
 });
+
+/* ============================================================
+   LIVE MODE — talks to demo/server.py for real Miru analysis
+   ============================================================ */
+
+const API_BASE = ""; // same origin when served by demo/server.py
+
+const liveBanner = document.getElementById("live-banner");
+const liveText   = document.getElementById("live-text");
+const liveMeta   = document.getElementById("live-meta");
+
+let LIVE = false;
+let MIRU_INFO = null;
+
+async function checkServerHealth() {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 1500);
+    const resp = await fetch(API_BASE + "/api/health", { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!resp.ok) throw new Error("not ok");
+    const data = await resp.json();
+    LIVE = true;
+    MIRU_INFO = data;
+    liveBanner.classList.add("connected");
+    liveBanner.classList.remove("error");
+    liveText.innerHTML = `<strong>✓ Live</strong> — connected to real Miru server. Every analysis below runs through actual Miru code.`;
+    liveMeta.innerHTML = `v<b>${data.version}</b> · backends <b>${data.backends.join(", ")}</b> · recording <b>${data.recording ? "on" : "off"}</b> · <b>${data.record_count}</b> records on disk`;
+  } catch (err) {
+    LIVE = false;
+    liveBanner.classList.remove("connected");
+    liveText.innerHTML = `▶ Run <span class="cmd">python demo/server.py</span> to enable real Miru analysis · <span style="color:var(--fg-2)">simulated mode active</span>`;
+    liveMeta.innerHTML = "";
+  }
+}
+
+/* ------------------------------------------------------------
+   Canvas → base64 raw RGB bytes (compatible with miru/_decode_image)
+   ------------------------------------------------------------ */
+function canvasToRGBBase64(srcCanvas, sideLen = 16) {
+  // Downsample to sideLen×sideLen square so it fits the decoder's
+  // perfect-square branch (side*side*3 bytes).
+  const off = document.createElement("canvas");
+  off.width = sideLen; off.height = sideLen;
+  off.getContext("2d").drawImage(srcCanvas, 0, 0, sideLen, sideLen);
+  const rgba = off.getContext("2d").getImageData(0, 0, sideLen, sideLen).data;
+  const rgb = new Uint8Array(sideLen * sideLen * 3);
+  for (let i = 0, j = 0; i < rgba.length; i += 4, j += 3) {
+    rgb[j]     = rgba[i];
+    rgb[j + 1] = rgba[i + 1];
+    rgb[j + 2] = rgba[i + 2];
+  }
+  // base64 encode (chunked to avoid the per-arg limit on apply)
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let k = 0; k < rgb.length; k += CHUNK) {
+    bin += String.fromCharCode.apply(null, rgb.subarray(k, k + CHUNK));
+  }
+  return btoa(bin);
+}
+
+/* ------------------------------------------------------------
+   Real attention heatmap — renders the actual 16×16 grid
+   returned by the server, glowing palette + alpha blend.
+   ------------------------------------------------------------ */
+function paintRealHeatmap(grid, intensity = 1.0) {
+  if (!currentSample) return;
+  repaintBase();
+  const W = demoCanvas.width, H = demoCanvas.height;
+  const Gh = grid.length, Gw = grid[0].length;
+  // Find max for normalisation
+  let max = 0;
+  for (const row of grid) for (const v of row) if (v > max) max = v;
+  if (max <= 0) max = 1;
+
+  const off = document.createElement("canvas");
+  off.width = W; off.height = H;
+  const octx = off.getContext("2d");
+  const overlay = octx.createImageData(W, H);
+
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      // Bilinear sample of the grid
+      const fx = (x / W) * (Gw - 1);
+      const fy = (y / H) * (Gh - 1);
+      const x0 = Math.floor(fx), x1 = Math.min(Gw - 1, x0 + 1);
+      const y0 = Math.floor(fy), y1 = Math.min(Gh - 1, y0 + 1);
+      const dx = fx - x0, dy = fy - y0;
+      const v00 = grid[y0][x0], v01 = grid[y0][x1];
+      const v10 = grid[y1][x0], v11 = grid[y1][x1];
+      const top = v00 * (1 - dx) + v01 * dx;
+      const bot = v10 * (1 - dx) + v11 * dx;
+      const w = (top * (1 - dy) + bot * dy) / max;
+
+      const i = (y * W + x) * 4;
+      const r = Math.min(255, Math.floor(40 + w * 220));
+      const g = Math.min(255, Math.floor(20 + (1 - Math.abs(0.5 - w) * 2) * 200));
+      const b = Math.min(255, Math.floor(255 - w * 200));
+      overlay.data[i]     = r;
+      overlay.data[i + 1] = g;
+      overlay.data[i + 2] = b;
+      overlay.data[i + 3] = Math.floor(w * 200 * intensity);
+    }
+  }
+  octx.putImageData(overlay, 0, 0);
+  demoCtx.globalCompositeOperation = "lighter";
+  demoCtx.drawImage(off, 0, 0);
+  demoCtx.globalCompositeOperation = "source-over";
+}
+
+let realPulseRAF = null;
+function startRealHeatmapPulse(grid) {
+  if (realPulseRAF) cancelAnimationFrame(realPulseRAF);
+  if (pulseRAF) { cancelAnimationFrame(pulseRAF); pulseRAF = null; }
+  let phase = 0;
+  function tick() {
+    phase += 0.05;
+    const intensity = 0.7 + Math.sin(phase) * 0.25;
+    paintRealHeatmap(grid, intensity);
+    realPulseRAF = requestAnimationFrame(tick);
+  }
+  tick();
+}
+function stopRealHeatmapPulse() {
+  if (realPulseRAF) cancelAnimationFrame(realPulseRAF);
+  realPulseRAF = null;
+}
+
+/* ------------------------------------------------------------
+   SSE frame parser — splits an ndjson-ish stream into events.
+   ------------------------------------------------------------ */
+function parseSSEFrames(buffer) {
+  const events = [];
+  const frames = buffer.split("\n\n");
+  // Last fragment may be partial — caller decides what to do.
+  for (let i = 0; i < frames.length - 1; i++) {
+    const frame = frames[i].trim();
+    if (!frame) continue;
+    let event = "message";
+    const dataLines = [];
+    for (const line of frame.split("\n")) {
+      if (line.startsWith(":")) continue;
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+    }
+    if (dataLines.length) {
+      try { events.push({ event, data: JSON.parse(dataLines.join("\n")) }); }
+      catch (e) { /* skip malformed */ }
+    }
+  }
+  return { events, leftover: frames[frames.length - 1] };
+}
+
+/* ------------------------------------------------------------
+   Real analysis — POST /api/analyze/stream + parse SSE live.
+   Replaces the simulated runAnalysis() when LIVE = true.
+   ------------------------------------------------------------ */
+async function runAnalysisLive() {
+  if (analyzing) return;
+  if (!currentSample) loadSample("photo");
+  analyzing = true;
+  btnAnalyze.disabled = true;
+  btnReset.disabled = false;
+  setStreamStatus("live", "scanning…");
+
+  scanOverlay.classList.add("active");
+  await sleep(450);
+
+  appendTermBoot(qInput.value);
+  // Live indicator on the boot banner
+  const liveTag = document.createElement("div");
+  liveTag.className = "term-line event-real";
+  liveTag.innerHTML = `<span class="prefix">⚡</span><span class="body"><span class="label">LIVE</span> <span class="dim">— real Miru server · ${MIRU_INFO ? `v${MIRU_INFO.version}` : ""}</span></span>`;
+  termBody.appendChild(liveTag);
+
+  // Snapshot the canvas pixels and POST
+  const image_b64 = canvasToRGBBase64(demoCanvas, 16);
+
+  let resp;
+  try {
+    resp = await fetch(API_BASE + "/api/analyze/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        image_b64,
+        prompt: qInput.value || "What is in this image?",
+        backend: "mock",
+      }),
+    });
+  } catch (err) {
+    appendTermError("network error: " + err.message);
+    cleanupAnalysis();
+    return;
+  }
+  if (!resp.ok) {
+    appendTermError("server returned HTTP " + resp.status);
+    cleanupAnalysis();
+    return;
+  }
+
+  const cx = (focusPoint?.x ?? 0.5) * demoCanvas.width;
+  const cy = (focusPoint?.y ?? 0.5) * demoCanvas.height;
+  let stepCount = 0;
+  let finalTrace = null;
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let cursorRow = null;
+  let cursorTarget = null;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const { events, leftover } = parseSSEFrames(buffer);
+    buffer = leftover;
+
+    for (const { event, data } of events) {
+      if (event === "step") {
+        stepCount++;
+        // step header
+        const head = document.createElement("div");
+        head.className = "term-line event-step";
+        head.innerHTML = `<span class="prefix">▸</span><span class="body"><span class="label">event:</span><span class="val">step</span> <span class="dim">#${data.step}</span></span>`;
+        termBody.appendChild(head);
+
+        // typed body
+        const body = document.createElement("div");
+        body.className = "term-line";
+        body.innerHTML = `<span class="prefix"> </span><span class="body"><span class="key">desc:</span> <span class="typed-text"></span><span class="cursor"></span></span>`;
+        termBody.appendChild(body);
+        const target = body.querySelector(".typed-text");
+        const cursor = body.querySelector(".cursor");
+
+        await typeInto(target, data.description, 12);
+        cursor.remove();
+
+        // confidence bar
+        const conf = (data.confidence ?? 1.0).toFixed(2);
+        const cline = document.createElement("div");
+        cline.className = "term-line";
+        cline.innerHTML = `<span class="prefix"> </span><span class="body"><span class="key">confidence:</span> <span class="val">${conf}</span><span class="conf-bar"><span class="fill"></span></span></span>`;
+        termBody.appendChild(cline);
+        requestAnimationFrame(() => {
+          cline.querySelector(".conf-bar .fill").style.width = (conf * 100).toFixed(0) + "%";
+        });
+        termBody.scrollTop = termBody.scrollHeight;
+
+        // After first step, start the pre-final pulse using the simulated
+        // Gaussian; real grid replaces it on the trace event.
+        if (stepCount === 1) {
+          scanOverlay.classList.remove("active");
+          startHeatmapPulse(cx, cy);
+          focusInd.style.left = (cx / demoCanvas.width * 100) + "%";
+          focusInd.style.top  = (cy / demoCanvas.height * 100) + "%";
+          focusInd.classList.add("visible");
+        }
+
+      } else if (event === "trace") {
+        finalTrace = data;
+        // swap the simulated pulse for the REAL attention grid
+        stopHeatmapPulse();
+        startRealHeatmapPulse(data.attention_map.data);
+
+        // header
+        const traceHead = document.createElement("div");
+        traceHead.className = "term-line event-trace";
+        traceHead.innerHTML = `<span class="prefix">▸</span><span class="body"><span class="label">event:</span><span class="val">trace</span> <span class="dim">— real Miru output</span> <span class="live-badge">LIVE</span></span>`;
+        termBody.appendChild(traceHead);
+
+        // answer card
+        const maxConf = Math.max(...(data.steps || []).map(s => s.confidence || 0), 0);
+        const ans = document.createElement("div");
+        ans.className = "answer-card live";
+        ans.innerHTML = `
+          <div class="lbl">answer · from real Miru</div>
+          <div class="text" id="ans-text-live"></div>
+          <div class="meta">
+            <span>backend <b>${data.backend}</b></span>
+            <span>steps <b>${(data.steps || []).length}</b></span>
+            <span>focus map <b>${data.attention_map.width}×${data.attention_map.height}</b></span>
+            <span>top confidence <b>${maxConf.toFixed(3)}</b></span>
+            <span>latency <b>${data.latency_ms.toFixed(2)} ms</b></span>
+          </div>`;
+        termBody.appendChild(ans);
+        await typeInto(ans.querySelector("#ans-text-live"), data.answer, 10);
+
+      } else if (event === "done") {
+        const done = document.createElement("div");
+        done.className = "term-line event-done";
+        done.innerHTML = `<span class="prefix">▸</span><span class="body"><span class="label">event:</span><span class="val">done</span> <span class="dim">stream closed cleanly · {}</span></span>`;
+        termBody.appendChild(done);
+
+      } else if (event === "error") {
+        appendTermError(`${data.error}: ${data.detail}`);
+      }
+      termBody.scrollTop = termBody.scrollHeight;
+    }
+  }
+
+  setStreamStatus("done", "complete · live");
+  // Refresh the activity log from the real recorder
+  await loadRealTraces();
+  cleanupAnalysis();
+}
+
+function appendTermError(msg) {
+  const err = document.createElement("div");
+  err.className = "term-line";
+  err.innerHTML = `<span class="prefix">!</span><span class="body" style="color:var(--hot)">${escapeHtml(msg)}</span>`;
+  termBody.appendChild(err);
+  termBody.scrollTop = termBody.scrollHeight;
+}
+
+function cleanupAnalysis() {
+  analyzing = false;
+  btnAnalyze.disabled = false;
+}
+
+/* ------------------------------------------------------------
+   Real activity log loader — pulls from /api/traces.
+   ------------------------------------------------------------ */
+function buildRealLogRow(rec) {
+  const row = document.createElement("div");
+  row.className = "log-row";
+  // ts is full ISO; show just HH:MM:SS for the summary
+  const tsShort = (rec.ts || "").split("T")[1]?.split(".")[0] || rec.ts || "";
+  const trace = rec.trace || {};
+  const sha = rec.image_sha256 || "—";
+  const stripped = JSON.stringify(rec, null, 2);
+  row.innerHTML = `
+    <div class="summary">
+      <div class="ts">${tsShort}</div>
+      <div class="answer">${escapeHtml(trace.answer || "(no answer)")}</div>
+      <div class="backend">${escapeHtml(trace.backend || "")}</div>
+      <div class="latency">${(trace.latency_ms ?? 0).toFixed(2)}ms</div>
+      <div class="chev">▸</div>
+    </div>
+    <div class="detail">
+      <div class="detail-inner">
+        <div class="privacy-row">
+          <span class="privacy-chip info">image_sha256: ${sha.slice(0, 16)}…</span>
+          <span class="privacy-chip">no raw bytes</span>
+          <span class="privacy-chip">no overlay</span>
+          <span class="live-badge">LIVE</span>
+        </div>
+        <pre>${escapeHtml(stripped)}</pre>
+      </div>
+    </div>`;
+  row.querySelector(".summary").addEventListener("click", () => row.classList.toggle("open"));
+  return row;
+}
+
+let realTracesLoaded = false;
+async function loadRealTraces() {
+  if (!LIVE) return;
+  try {
+    const resp = await fetch(API_BASE + "/api/traces?limit=50");
+    if (!resp.ok) return;
+    const data = await resp.json();
+    realTracesLoaded = true;
+
+    // Stop any in-flight simulated playback
+    pauseLog();
+    activityList.innerHTML = "";
+    SAMPLE_LOG.length = 0;
+    logIdx = 0;
+
+    if (!data.traces.length) {
+      activityList.innerHTML = `<div style="padding: 30px 22px; color: var(--fg-2); font-size: 13px; text-align: center;">No traces yet · run an analysis above to populate the log.</div>`;
+      logProgress.textContent = "0 / 0";
+      return;
+    }
+
+    // Animate them in with stagger
+    for (let i = 0; i < data.traces.length; i++) {
+      const row = buildRealLogRow(data.traces[i]);
+      activityList.appendChild(row);
+      requestAnimationFrame(() => row.classList.add("in"));
+      // brief active highlight on the newest entry
+      if (i === 0) {
+        row.classList.add("active");
+        setTimeout(() => row.classList.remove("active"), 1400);
+      }
+      await sleep(90);
+    }
+    logProgress.textContent = `${data.traces.length} / ${data.traces.length}`;
+
+    // Update banner record count
+    if (MIRU_INFO) {
+      MIRU_INFO.record_count = data.count;
+      liveMeta.innerHTML = `v<b>${MIRU_INFO.version}</b> · backends <b>${MIRU_INFO.backends.join(", ")}</b> · recording <b>on</b> · <b>${data.count}</b> records on disk`;
+    }
+  } catch (err) {
+    // Silent — fall back to simulation
+  }
+}
+
+/* ------------------------------------------------------------
+   Boot — health-check on load, then swap in live behavior
+   ------------------------------------------------------------ */
+(async function bootLiveMode() {
+  await checkServerHealth();
+  if (!LIVE) return;
+
+  // Replace the analyze button handler with the real one.
+  btnAnalyze.removeEventListener("click", runAnalysis);
+  btnAnalyze.addEventListener("click", runAnalysisLive);
+
+  // Also load real traces once the log section first comes into view —
+  // the simulated IntersectionObserver already triggered playLog(),
+  // but we'll override its content with the real recorder data.
+  await loadRealTraces();
+})();
 </script>
 </body>
 </html>
