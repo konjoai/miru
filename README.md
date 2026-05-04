@@ -81,6 +81,18 @@ miru record export --out all.jsonl  # concatenate everything into one JSONL
 miru record export --out summary.csv --format csv
 ```
 
+### Benchmarking attention quality
+
+Miru ships a deterministic saliency benchmark harness — synthetic images with known ground-truth masks, scored on IoU @ top-percentile, pixel-level AUC-ROC, and hit@k.
+
+```bash
+miru bench run --backend mock --n 30 --out baseline-mock.json
+miru bench run --backend clip --n 30 --out baseline-clip.json
+miru bench compare baseline-mock.json baseline-clip.json --metric iou
+```
+
+Same `(n, seed)` between runs ⇒ paired comparison and a paired-t statistic. No external dataset, no license headaches, runs in seconds in CI.
+
 ---
 
 ## 🎯 Vision

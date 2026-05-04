@@ -5,6 +5,51 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [0.6.0] — 2026-05-04
+
+### Added
+
+#### Saliency benchmark harness (`miru/bench/`)
+- `miru/bench/synth.py` — deterministic synthetic image + ground-truth-mask generator with three difficulty variants:
+  - `single` — one bright Gaussian blob on smooth coloured noise
+  - `two` — two well-separated blobs (centroids guaranteed `> 4σ` apart, with a deterministic fallback if the rejection sampler can't find a clean pair)
+  - `low_snr` — single blob with reduced amplitude over stronger noise
+  Every sample is fully reproducible from `(seed, index)`; ground-truth mask is the union of disks of radius `1.6σ` centred at each blob.
+- `miru/bench/metrics.py` — three saliency metrics, all pure NumPy:
+  - `iou_at_topk_pct(attn, mask, top_pct)` — bilinearly upsample attention, threshold at the top `top_pct`, IoU vs mask
+  - `auc_roc(attn, mask)` — pixel-level AUC via Mann-Whitney U (with tie correction). Returns chance level (0.5) on degenerate masks rather than raising
+  - `hit_at_k(attn, mask, k)` — fraction of top-k attention pixels inside the mask; downsamples the mask onto the attention grid (cheaper than upsampling attn)
+  - `bilinear_upsample` — `align_corners=True` 2-D resampler used by the metrics
+- `miru/bench/runner.py` — `run_benchmark(backend, n, seed, …)` drives any registered VLMBackend over a synth dataset, scores each sample, aggregates `{mean, std, p50, p95, n}` per metric, and persists a single JSON document with hardware metadata, schema version, and per-sample drilldown. `compare_results(a, b, metric)` enforces paired runs (same n + seed) and reports mean delta + paired t-statistic + degrees of freedom (no SciPy dep — caller can compute the p-value if needed).
+
+#### CLI (`miru/cli/bench.py`)
+- `miru bench run --backend <name> --n N --seed S [--out PATH] [--top-pct 0.20] [--k 1]` — execute and print summary; optionally save JSON
+- `miru bench show <result.json>` — pretty-print a saved run with per-variant IoU breakdown
+- `miru bench compare <a.json> <b.json> [--metric iou|auc|hit1|latency_ms]` — paired delta, "→ b WINS / a WINS / tie" verdict
+- All three subcommands wired into the existing `miru` entry point
+
+#### First baseline result
+- `benchmarks/results/baseline-mock.json` — n=30, seed=42 against the mock backend. Aggregate: IoU **0.062**, AUC **0.627**, hit@1 **0.100**, latency **0.080 ms**. The harness immediately confirms what the mock's design implies: its attention is question-hash-driven and only weakly related to image content. This is the floor against which real backends (CLIP, future VLMs) will be measured.
+
+#### Tests (`tests/test_bench.py`) — 29 new tests
+- Synth: shape/dtype contracts, determinism on `(seed, index)`, distinct outputs for different indices, fixed variant cycle, two-variant has two centroids, mask centroid matches recorded centroid (within 1.5px), `generate_dataset` size
+- Metrics: bilinear upsample identity + corner preservation, IoU perfect / disjoint / `top_pct` validation, AUC perfect / inverted / random / degenerate-mask chance, hit@k inside / outside / mask-resampling / `k≥1` validation
+- Runner: smoke shape contract, unknown-backend fallback to mock, all metrics in `[0,1]` and latency `> 0`, hardware metadata captured, save→load round-trip, `compare_results` zero-delta on identical seeds, `compare_results` rejects unpaired seed/n
+- CLI: parser accepts all three subcommands, run writes JSON, show round-trips through main entry point, compare prints "tie" on identical seeds
+
+### Changed
+- `miru/__init__.py`, `miru/config.py`, `pyproject.toml`, `tests/test_api.py` — version 0.5.0 → 0.6.0
+- `miru/cli/__init__.py` — `bench` subcommand wired into the parser; module docstring updated
+
+### Deviations from plan
+- PLAN.md sketched Phase 6 as "trained-saliency benchmarks: take a held-out VQA slice". Shipped as a self-contained synthetic harness instead. Rationale: an external dataset adds a download dependency, license fragility, and runtime flakiness for what should be a deterministic CI check. Synthetic blobs with known ground truth deliver the same statistical claim, license-clean, in seconds, with zero new deps. 건조 — strip to essence. The harness is also extensible: a future PR can plug VQA-X behind the same `iou_at_topk_pct` / `auc_roc` / `hit_at_k` interface without touching downstream consumers.
+
+### Test results
+- 129 / 129 passing (4 skipped — gated CLIP real-backend tests)
+- All 100 prior tests still pass
+
+---
+
 ## [0.5.0] — 2026-05-02
 
 ### Added

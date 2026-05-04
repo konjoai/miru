@@ -1,7 +1,7 @@
 """Miru — multimodal reasoning tracer and VLM explainability engine."""
 from __future__ import annotations
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 from miru.attention.extractor import AttentionExtractor
 from miru.models.base import VLMBackend

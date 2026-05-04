@@ -1,8 +1,8 @@
 # PLAN.md — Miru Roadmap
 
 **Project:** Miru — Multimodal Reasoning Tracer  
-**Current version:** v0.5.0  
-**Status:** Dataset recorder complete, 100/100 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
+**Current version:** v0.6.0  
+**Status:** Saliency benchmark harness complete, 129/129 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 
@@ -95,10 +95,28 @@
 
 ---
 
-## Phase 6 — TBD
+## Phase 6 — Saliency Benchmark Harness (v0.6.0) ✅ COMPLETE
+
+**Goal:** Quantify how well an attention map tracks the salient region of an image, with a deterministic harness that runs in CI.
+
+**Delivered:**
+- `miru/bench/synth.py` — deterministic synthetic image + ground-truth-mask generator (single / two-blob / low-SNR variants), reproducible from `(seed, index)`
+- `miru/bench/metrics.py` — `iou_at_topk_pct`, `auc_roc` (Mann-Whitney U with tie correction), `hit_at_k`; pure NumPy bilinear resampler
+- `miru/bench/runner.py` — `run_benchmark()` drives any registered backend over the synth dataset, aggregates `{mean, std, p50, p95}` per metric, captures hardware metadata, persists JSON; `compare_results()` reports paired delta + paired-t statistic
+- `miru/cli/bench.py` — `miru bench run / show / compare` subcommands wired into the existing CLI entry point
+- `benchmarks/results/baseline-mock.json` — first locked-in baseline (n=30, seed=42): IoU 0.062, AUC 0.627, hit@1 0.100, latency 0.080 ms — confirms the mock backend's attention is question-hash-driven, not image-driven
+- 29 new tests across `tests/test_bench.py`
+
+**Konjo deviation from sketch:** Original plan called for a held-out VQA slice; shipped a synthetic harness instead because an external dataset adds a download dependency, license fragility, and runtime flakiness for a deterministic check. Synthetic blobs with known ground truth deliver the same statistical claim, license-clean, in seconds, with zero new deps. Extensible — a future PR can plug VQA-X behind the same metric interface without touching consumers.
+
+**Ship gate:** 129/129 tests pass; all 100 prior tests still pass; first real benchmark recorded against the mock backend.
+
+---
+
+## Phase 7 — TBD
 
 Open candidates (Discovery to refine before sprinting):
+- Score the CLIP backend against the new harness and publish a `clip-vs-mock` comparison artefact — concrete proof that attention quality varies meaningfully across backends, and a regression gate for future CLIP changes.
 - Native VLM streaming backend (LLaVA / Idefics / Qwen-VL with token-level attention) so `/analyze/stream` produces genuinely incremental reasoning instead of replaying a single-shot inference.
-- Trained-saliency benchmarks: take a held-out VQA slice, score Miru's attention against ground-truth bounding boxes, publish the curve.
-- Web UI viewer for recorded traces: render attention overlays + step timelines from the JSONL the recorder writes.
+- Real-image benchmark slice: plug VQA-X or COCO-Saliency behind the existing metric interface and publish the curve alongside the synthetic baseline.
 - gRPC alternative to the FastAPI surface for in-cluster low-latency inference.

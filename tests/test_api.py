@@ -20,7 +20,7 @@ def test_health_version(client: TestClient) -> None:
     data = resp.json()
     assert "version" in data
     assert isinstance(data["version"], str)
-    assert data["version"] == "0.5.0"
+    assert data["version"] == "0.6.0"
 
 
 def test_health_backends(client: TestClient) -> None:
