@@ -5,6 +5,65 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [0.7.0] — 2026-05-05
+
+### Added
+
+#### Attention-map export (`miru/bench/export.py`)
+- `generate_report(result, out_dir, …)` — takes a saved benchmark JSON, re-generates
+  all synthetic images deterministically from `(seed, index)`, composites the attention
+  heatmap on each image, draws a yellow ground-truth mask border, and writes:
+  - `report.html` — self-contained HTML page with inline base64 thumbnails, aggregate
+    metric tables, and per-sample IoU/AUC/hit@1/latency tiles
+  - `sample_NNN_overlay.png` / `sample_NNN_raw.png` — per-sample PNG tile pairs (optional)
+- `render_sample(sample_rec, bench_seed, bench_size, …)` — re-generates one synthetic
+  image, runs the mock backend for a deterministic attention map, composites it.
+  Returns `(raw_rgba, overlay_rgba)` as `(H, W, 4)` uint8 RGBA pairs.
+- `_composite_overlay(image, attn_grid, alpha, colormap)` — bilinear upsample
+  (`miru.bench.metrics.bilinear_upsample`, `align_corners=True`) then alpha-blend.
+  Math: `out = clip(heatmap * α + base * (1-α), 0, 255)`.
+- `_mask_border_rgba(mask)` — 4-connected erosion to extract boundary pixels, rendered
+  as semi-transparent yellow (R=255, G=220, B=0, A=180).
+- `_alpha_composite(bottom, top)` — Porter-Duff over compositing in float32 with
+  correct alpha channel propagation: `out_A = α_t + α_b * (1-α_t)`.
+- Zero new runtime dependencies: reuses `miru.bench.metrics.bilinear_upsample`,
+  `miru.visualization.overlay.{attention_to_heatmap,encode_png_b64}`, and
+  `miru.bench.synth.generate_sample`.
+
+#### CLI (`miru/cli/export.py`, `miru/cli/__init__.py`)
+- `miru export <result.json> <out_dir>` — top-level subcommand (not nested under `bench`)
+- Flags: `--alpha 0.5`, `--colormap jet|hot|viridis`, `--no-mask-border`, `--no-png-tiles`
+- Returns exit 0 on success, 1 with a clear error message on load failure
+
+#### Tests (`tests/test_export.py`) — 32 new tests
+- `_image_to_rgba`: shape/dtype, alpha=255, value clipping
+- `_composite_overlay`: shape/dtype, all three colormaps, alpha=0 identity
+- `_mask_border_rgba`: shape/dtype, interior transparent, edge opaque, empty mask
+- `_alpha_composite`: shape/dtype, transparent-top identity, opaque-top dominates
+- `render_sample`: shape/dtype contracts, determinism, mask-border on/off,
+  different indices produce different images
+- `generate_report`: HTML created, aggregate metrics present, inline images embedded,
+  PNG tiles count, no-tiles mode, valid PNG magic bytes, all colormaps, return type,
+  creates nested directories
+- CLI: parser accepts `export` subcommand + all flags, happy-path end-to-end,
+  `--no-png-tiles` suppresses PNGs, bad-result-path returns exit 1 with error message,
+  HTML content correctness (n, seed, backend in output)
+
+### Fixed
+- `pyproject.toml` `[dev]` extras were missing `Pillow>=9.0.0`; this caused a
+  pre-existing failure in `test_analyze_with_overlay_returns_nonempty_string` when
+  running in a fresh venv. Added `Pillow>=9.0.0` to `[dev]`.
+
+### Changed
+- `miru/__init__.py`, `miru/config.py`, `pyproject.toml` — version 0.6.0 → 0.7.0
+- `miru/cli/__init__.py` — `export` top-level subcommand wired in; module docstring updated
+
+### Test results
+- 161 / 161 passing (4 skipped — gated CLIP real-backend tests)
+- All 129 prior tests still pass
+
+---
+
 ## [0.6.0] — 2026-05-04
 
 ### Added

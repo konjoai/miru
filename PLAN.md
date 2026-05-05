@@ -1,8 +1,8 @@
 # PLAN.md — Miru Roadmap
 
 **Project:** Miru — Multimodal Reasoning Tracer  
-**Current version:** v0.6.0  
-**Status:** Saliency benchmark harness complete, 129/129 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
+**Current version:** v0.7.0  
+**Status:** Attention-map export complete, 161/161 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 
@@ -113,9 +113,35 @@
 
 ---
 
-## Phase 7 — TBD
+## Phase 7 — Attention-Map Export + HTML Report (v0.7.0) ✅ COMPLETE
 
-Open candidates (Discovery to refine before sprinting):
+**Goal:** Turn any saved benchmark JSON into a visual artefact — per-sample
+attention-map overlay PNGs and a self-contained HTML report — so developers
+can visually inspect what the synth harness looks like and spot attention
+anomalies without writing notebook code.
+
+**Delivered:**
+- `miru/bench/export.py` — `generate_report()` driver; `render_sample()` (re-generates
+  synth image from `(seed, index)`, runs mock inference, composites the jet/hot/viridis
+  heatmap, draws a yellow GT-mask border via Porter-Duff over compositing);
+  `_composite_overlay`, `_mask_border_rgba`, `_alpha_composite`, `_image_to_rgba` helpers;
+  zero new runtime dependencies (pure NumPy + existing visualization layer)
+- `miru/cli/export.py` — `run_export_report()` with `alpha`, `colormap`,
+  `--no-mask-border`, `--no-png-tiles` flags
+- `miru/cli/__init__.py` — `miru export <result.json> <out_dir>` subcommand wired in
+- `pyproject.toml` — added `Pillow>=9.0.0` to `[dev]` extras (was missing, caused
+  pre-existing `test_analyze_with_overlay_returns_nonempty_string` failure)
+- 32 new tests in `tests/test_export.py` across rendering helpers, `generate_report`,
+  and CLI integration
+
+**Ship gate:** 161/161 tests pass; all 129 prior tests still pass; 4 real-backend tests
+skip without `MIRU_TEST_REAL_BACKENDS=1`.
+
+---
+
+## Phase 8 — TBD
+
+Open candidates:
 - Score the CLIP backend against the new harness and publish a `clip-vs-mock` comparison artefact — concrete proof that attention quality varies meaningfully across backends, and a regression gate for future CLIP changes.
 - Native VLM streaming backend (LLaVA / Idefics / Qwen-VL with token-level attention) so `/analyze/stream` produces genuinely incremental reasoning instead of replaying a single-shot inference.
 - Real-image benchmark slice: plug VQA-X or COCO-Saliency behind the existing metric interface and publish the curve alongside the synthetic baseline.

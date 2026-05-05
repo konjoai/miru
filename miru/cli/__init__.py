@@ -9,6 +9,7 @@ Subcommands
 ``miru bench run``      — run the saliency benchmark over a backend
 ``miru bench show``     — pretty-print a saved benchmark result
 ``miru bench compare``  — paired delta between two saved results
+``miru export``         — export a bench result to an HTML report + PNG tiles
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ import sys
 from typing import Optional, Sequence
 
 from miru.cli.bench import run_compare, run_run, run_show
+from miru.cli.export import run_export_report
 from miru.cli.record import run_export, run_list
 
 
@@ -76,6 +78,36 @@ def build_parser() -> argparse.ArgumentParser:
     p_cmp.add_argument("b", help="Second result JSON")
     p_cmp.add_argument("--metric", default="iou", choices=("iou", "auc", "hit1", "latency_ms"))
 
+    # ----- export -------------------------------------------------------
+    p_exp = sub.add_parser(
+        "export",
+        help="Export a bench result to an HTML report + PNG tiles",
+    )
+    p_exp.add_argument("result", help="Path to a saved bench result JSON")
+    p_exp.add_argument("out_dir", help="Output directory (created if absent)")
+    p_exp.add_argument(
+        "--alpha",
+        type=float,
+        default=0.50,
+        help="Heatmap opacity 0–1 (default: 0.50)",
+    )
+    p_exp.add_argument(
+        "--colormap",
+        default="jet",
+        choices=("jet", "hot", "viridis"),
+        help="Heatmap colormap (default: jet)",
+    )
+    p_exp.add_argument(
+        "--no-mask-border",
+        action="store_true",
+        help="Suppress the yellow GT mask boundary on overlay tiles",
+    )
+    p_exp.add_argument(
+        "--no-png-tiles",
+        action="store_true",
+        help="Skip writing individual PNG tile files; HTML report only",
+    )
+
     return parser
 
 
@@ -103,6 +135,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return run_show(args.path)
         if args.bench_cmd == "compare":
             return run_compare(args.a, args.b, metric=args.metric)
+
+    if args.cmd == "export":
+        return run_export_report(
+            args.result,
+            args.out_dir,
+            alpha=args.alpha,
+            colormap=args.colormap,
+            no_mask_border=args.no_mask_border,
+            no_png_tiles=args.no_png_tiles,
+        )
 
     parser.error(f"unhandled command: {args.cmd}")  # pragma: no cover
     return 2  # pragma: no cover
