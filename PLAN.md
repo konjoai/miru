@@ -1,8 +1,8 @@
 # PLAN.md — Miru Roadmap
 
 **Project:** Miru — Multimodal Reasoning Tracer  
-**Current version:** v0.7.0  
-**Status:** Attention-map export complete, 161/161 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
+**Current version:** v0.8.0  
+**Status:** Backend comparison artefact complete, 176 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 
@@ -139,10 +139,32 @@ skip without `MIRU_TEST_REAL_BACKENDS=1`.
 
 ---
 
-## Phase 8 — TBD
+## Phase 8 — CLIP vs Mock Backend Comparison (v0.8.0) ✅ COMPLETE
+
+**Goal:** Produce a concrete `clip-vs-mock` comparison artefact — concrete proof
+that attention quality varies meaningfully across backends, and a regression gate
+for future backend changes.
+
+**Delivered:**
+- `miru/bench/comparison.py` — `BackendComparison` dataclass + `compare_backends()`
+  function; runs `run_benchmark()` on two named backends with matching seed, calls
+  `compare_results()` for the paired delta, determines winner from `mean_delta`,
+  captures hardware metadata; `BackendComparison.save()` writes a timestamped JSON
+  artefact to `benchmarks/results/` and never overwrites an existing file
+- `miru/cli/__init__.py` — `miru compare <backend_a> <backend_b>` top-level subcommand
+  with `--n`, `--seed`, `--name`, `--save`, `--out-dir` flags; prints a summary table
+- `miru/__init__.py` — bumped to v0.8.0
+- `pyproject.toml` — bumped to v0.8.0
+- 15 new tests in `tests/test_comparison.py`
+
+**Ship gate:** 176/176 tests pass; all 161 prior tests still pass; 4 real-backend tests
+skip without `MIRU_TEST_REAL_BACKENDS=1`.
+
+---
+
+## Phase 9 — TBD
 
 Open candidates:
-- Score the CLIP backend against the new harness and publish a `clip-vs-mock` comparison artefact — concrete proof that attention quality varies meaningfully across backends, and a regression gate for future CLIP changes.
 - Native VLM streaming backend (LLaVA / Idefics / Qwen-VL with token-level attention) so `/analyze/stream` produces genuinely incremental reasoning instead of replaying a single-shot inference.
 - Real-image benchmark slice: plug VQA-X or COCO-Saliency behind the existing metric interface and publish the curve alongside the synthetic baseline.
 - gRPC alternative to the FastAPI surface for in-cluster low-latency inference.
