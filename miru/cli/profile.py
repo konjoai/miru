@@ -16,7 +16,13 @@ def run_profile(
     *,
     stream=None,
 ) -> int:
-    """Run the latency profiler and print a summary table."""
+    """Run the latency profiler and print a summary table.
+
+    When *out_path* is given it is treated as an exact file path; the JSON
+    result is written there directly.  This is distinct from
+    ``ProfileResult.save()`` which writes a timestamped file inside a
+    *directory*.
+    """
     out = stream or sys.stdout
     out.write(
         f"profiling: backend={backend}  warmup={n_warmup}  timed={n_timed}"
@@ -33,8 +39,7 @@ def run_profile(
             n_timed=n_timed,
             image_size=image_size,
             seed=seed,
-            save=bool(out_path),
-            output_dir=Path(out_path) if out_path else None,
+            save=False,  # CLI handles file writing below
         )
     except (RuntimeError, ValueError) as exc:
         out.write(f"error: {exc}\n")
