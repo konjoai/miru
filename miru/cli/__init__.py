@@ -11,6 +11,7 @@ Subcommands
 ``miru bench compare``  — paired delta between two saved results
 ``miru export``         — export a bench result to an HTML report + PNG tiles
 ``miru compare``        — live CLIP-vs-mock backend comparison artefact
+``miru profile``        — per-backend inference latency profiler
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ from typing import Optional, Sequence
 
 from miru.cli.bench import run_compare, run_run, run_show
 from miru.cli.export import run_export_report
+from miru.cli.profile import run_profile
 from miru.cli.record import run_export, run_list
 
 
@@ -143,6 +145,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override the output directory when --save is set",
     )
 
+    # ----- profile (latency profiler) -----------------------------------
+    p_profile = sub.add_parser(
+        "profile",
+        help="Measure per-backend inference latency with warmup + percentiles",
+    )
+    p_profile.add_argument(
+        "backend",
+        help="Backend registry name to profile (e.g. mock)",
+    )
+    p_profile.add_argument(
+        "--n-warmup", type=int, default=3,
+        help="Discarded warm-up calls before timing starts (default: 3)",
+    )
+    p_profile.add_argument(
+        "--n-timed", type=int, default=20,
+        help="Number of timed calls to include in stats (default: 20)",
+    )
+    p_profile.add_argument(
+        "--size", type=int, default=64,
+        help="Side length of the probe image in pixels (default: 64)",
+    )
+    p_profile.add_argument(
+        "--seed", type=int, default=0,
+        help="RNG seed for the probe image (default: 0)",
+    )
+    p_profile.add_argument(
+        "--out", default=None,
+        help="Save the profile JSON to this path (optional)",
+    )
+
     return parser
 
 
@@ -190,7 +222,7 @@ def _run_compare_backends(args, *, stream=None) -> int:  # type: ignore[no-untyp
     return 0
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Optional[Sequence[str]] = None, *, stream=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -226,7 +258,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
 
     if args.cmd == "compare":
-        return _run_compare_backends(args)
+        return _run_compare_backends(args, stream=stream)
+
+    if args.cmd == "profile":
+        return run_profile(
+            args.backend,
+            n_warmup=args.n_warmup,
+            n_timed=args.n_timed,
+            image_size=args.size,
+            seed=args.seed,
+            out_path=args.out,
+            stream=stream,
+        )
 
     parser.error(f"unhandled command: {args.cmd}")  # pragma: no cover
     return 2  # pragma: no cover

@@ -1,8 +1,8 @@
 # PLAN.md — Miru Roadmap
 
 **Project:** Miru — Multimodal Reasoning Tracer  
-**Current version:** v0.8.0  
-**Status:** Backend comparison artefact complete, 176 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
+**Current version:** v0.9.0  
+**Status:** Latency profiler complete, 196 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 
@@ -107,8 +107,6 @@
 - `benchmarks/results/baseline-mock.json` — first locked-in baseline (n=30, seed=42): IoU 0.062, AUC 0.627, hit@1 0.100, latency 0.080 ms — confirms the mock backend's attention is question-hash-driven, not image-driven
 - 29 new tests across `tests/test_bench.py`
 
-**Konjo deviation from sketch:** Original plan called for a held-out VQA slice; shipped a synthetic harness instead because an external dataset adds a download dependency, license fragility, and runtime flakiness for a deterministic check. Synthetic blobs with known ground truth deliver the same statistical claim, license-clean, in seconds, with zero new deps. Extensible — a future PR can plug VQA-X behind the same metric interface without touching consumers.
-
 **Ship gate:** 129/129 tests pass; all 100 prior tests still pass; first real benchmark recorded against the mock backend.
 
 ---
@@ -162,9 +160,35 @@ skip without `MIRU_TEST_REAL_BACKENDS=1`.
 
 ---
 
-## Phase 9 — TBD
+## Phase 9 — Latency Profiler (v0.9.0) ✅ COMPLETE
+
+**Goal:** Dedicated per-backend latency profiler with warmup, high-resolution
+percentiles, and a `miru profile` CLI command.
+
+**Delivered:**
+- `miru/bench/profile.py` — `profile_backend()` runs *n_warmup* discarded calls
+  then *n_timed* measured calls against a fixed synth probe image; computes mean,
+  std, min, max, p50, p95, p99, p99.9 and single-call throughput (calls/s);
+  `ProfileResult` dataclass with `save()` / `to_dict()` and no-overwrite collision
+  avoidance; no new runtime dependencies (pure NumPy + stdlib)
+- `miru/cli/profile.py` — `run_profile()` CLI handler with `_format_profile()` table
+  renderer
+- `miru/cli/__init__.py` — `miru profile <backend>` subcommand wired in with
+  `--n-warmup`, `--n-timed`, `--size`, `--seed`, `--out` flags
+- `miru/bench/__init__.py` — exports `ProfileResult`, `profile_backend`
+- `miru/__init__.py` — bumped to v0.9.0
+- `pyproject.toml` — bumped to v0.9.0
+- 20 new tests in `tests/test_profile.py`
+
+**Ship gate:** 196/196 tests pass; all 176 prior tests still pass; 4 real-backend tests
+skip without `MIRU_TEST_REAL_BACKENDS=1`.
+
+---
+
+## Phase 10 — TBD
 
 Open candidates:
 - Native VLM streaming backend (LLaVA / Idefics / Qwen-VL with token-level attention) so `/analyze/stream` produces genuinely incremental reasoning instead of replaying a single-shot inference.
 - Real-image benchmark slice: plug VQA-X or COCO-Saliency behind the existing metric interface and publish the curve alongside the synthetic baseline.
 - gRPC alternative to the FastAPI surface for in-cluster low-latency inference.
+- Prometheus metrics endpoint (`/metrics`) exposing per-backend latency histograms from live `/analyze` traffic.

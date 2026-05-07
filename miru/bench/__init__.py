@@ -1,5 +1,6 @@
-"""Saliency benchmark harness — synth dataset, metrics, runner."""
+"""Saliency benchmark harness — synth dataset, metrics, runner, profiler."""
 from miru.bench.metrics import auc_roc, bilinear_upsample, hit_at_k, iou_at_topk_pct
+from miru.bench.profile import ProfileResult, profile_backend
 from miru.bench.runner import (
     SCHEMA_VERSION,
     compare_results,
@@ -30,4 +31,6 @@ __all__ = [
     "save_result",
     "load_result",
     "compare_results",
+    "ProfileResult",
+    "profile_backend",
 ]
