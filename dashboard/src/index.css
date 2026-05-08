@@ -1,0 +1,20 @@
+@import "@konjoai/ui/styles";
+
+@source "../node_modules/@konjoai/ui/src";
+
+/* miru-specific token: the iris ring color used in the lockup. */
+@theme {
+  --color-miru-iris: #b794ff;
+}
+
+:root { color-scheme: dark; }
+html, body, #root { height: 100%; margin: 0; }
+
+/* Subtle film-grain texture for the cinema panel. Can be toggled on/off. */
+@utility grain-konjo {
+  background-image:
+    radial-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
+    radial-gradient(rgba(255,255,255,0.015) 1px, transparent 1px);
+  background-size: 4px 4px, 7px 7px;
+  background-position: 0 0, 2px 2px;
+}
