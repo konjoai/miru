@@ -10,6 +10,8 @@ Subcommands
 ``miru bench show``     — pretty-print a saved benchmark result
 ``miru bench compare``  — paired delta between two saved results
 ``miru export``         — export a bench result to an HTML report + PNG tiles
+``miru compare``        — live CLIP-vs-mock backend comparison artefact
+``miru profile``        — per-backend inference latency profiler
 """
 from __future__ import annotations
 
@@ -19,6 +21,7 @@ from typing import Optional, Sequence
 
 from miru.cli.bench import run_compare, run_run, run_show
 from miru.cli.export import run_export_report
+from miru.cli.profile import run_profile
 from miru.cli.record import run_export, run_list
 
 
@@ -89,7 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--alpha",
         type=float,
         default=0.50,
-        help="Heatmap opacity 0–1 (default: 0.50)",
+        help="Heatmap opacity 0-1 (default: 0.50)",
     )
     p_exp.add_argument(
         "--colormap",
@@ -108,10 +111,118 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip writing individual PNG tile files; HTML report only",
     )
 
+    # ----- compare (live backend-vs-backend) ----------------------------
+    p_compare = sub.add_parser(
+        "compare",
+        help="Run two backends live and produce a comparison artefact",
+    )
+    p_compare.add_argument(
+        "backend_a",
+        help="First backend registry name (e.g. mock)",
+    )
+    p_compare.add_argument(
+        "backend_b",
+        help="Second backend registry name (e.g. clip)",
+    )
+    p_compare.add_argument(
+        "--n", type=int, default=30,
+        help="Number of synth samples per backend (default: 30)",
+    )
+    p_compare.add_argument(
+        "--seed", type=int, default=42,
+        help="Top-level RNG seed (default: 42)",
+    )
+    p_compare.add_argument(
+        "--name", default="",
+        help="Human-readable label for the comparison (optional)",
+    )
+    p_compare.add_argument(
+        "--save", action="store_true",
+        help="Persist the comparison JSON to benchmarks/results/",
+    )
+    p_compare.add_argument(
+        "--out-dir", default=None,
+        help="Override the output directory when --save is set",
+    )
+
+    # ----- profile (latency profiler) -----------------------------------
+    p_profile = sub.add_parser(
+        "profile",
+        help="Measure per-backend inference latency with warmup + percentiles",
+    )
+    p_profile.add_argument(
+        "backend",
+        help="Backend registry name to profile (e.g. mock)",
+    )
+    p_profile.add_argument(
+        "--n-warmup", type=int, default=3,
+        help="Discarded warm-up calls before timing starts (default: 3)",
+    )
+    p_profile.add_argument(
+        "--n-timed", type=int, default=20,
+        help="Number of timed calls to include in stats (default: 20)",
+    )
+    p_profile.add_argument(
+        "--size", type=int, default=64,
+        help="Side length of the probe image in pixels (default: 64)",
+    )
+    p_profile.add_argument(
+        "--seed", type=int, default=0,
+        help="RNG seed for the probe image (default: 0)",
+    )
+    p_profile.add_argument(
+        "--out", default=None,
+        help="Save the profile JSON to this path (optional)",
+    )
+
     return parser
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def _run_compare_backends(args, *, stream=None) -> int:  # type: ignore[no-untyped-def]
+    """Handler for the top-level ``miru compare`` subcommand."""
+    import sys as _sys
+    from pathlib import Path
+    from miru.bench.comparison import compare_backends
+
+    out = stream or _sys.stdout
+    out.write(
+        f"comparing backends: a={args.backend_a} b={args.backend_b} "
+        f"n={args.n} seed={args.seed}\n"
+    )
+    out.flush()
+
+    try:
+        bc = compare_backends(
+            args.backend_a,
+            args.backend_b,
+            n_samples=args.n,
+            seed=args.seed,
+            comparison_name=args.name,
+            output_dir=Path(args.out_dir) if args.out_dir else None,
+            save=args.save,
+        )
+    except RuntimeError as exc:
+        out.write(f"error: {exc}\n")
+        return 1
+
+    cmp = bc.comparison or {}
+    delta = cmp.get("mean_delta", 0.0)
+    a_mean = cmp.get("a_mean", "n/a")
+    b_mean = cmp.get("b_mean", "n/a")
+
+    out.write(
+        f"\nComparison: {bc.name}\n"
+        f"  backend A ({bc.backend_a}): iou mean = {a_mean}\n"
+        f"  backend B ({bc.backend_b}): iou mean = {b_mean}\n"
+        f"  mean_delta (b - a)         = {delta:+.4f}\n"
+        f"  winner                     = {bc.winner}\n"
+    )
+    if args.save:
+        out.write(f"  (result saved to output_dir)\n")
+    return 0
+
+
+def main(argv: Optional[Sequence[str]] = None, *, stream=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -144,6 +255,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             colormap=args.colormap,
             no_mask_border=args.no_mask_border,
             no_png_tiles=args.no_png_tiles,
+        )
+
+    if args.cmd == "compare":
+        return _run_compare_backends(args, stream=stream)
+
+    if args.cmd == "profile":
+        return run_profile(
+            args.backend,
+            n_warmup=args.n_warmup,
+            n_timed=args.n_timed,
+            image_size=args.size,
+            seed=args.seed,
+            out_path=args.out,
+            stream=stream,
         )
 
     parser.error(f"unhandled command: {args.cmd}")  # pragma: no cover
