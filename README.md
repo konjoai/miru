@@ -70,6 +70,7 @@ uvicorn miru.main:app --reload
 * `GET  /health` — service status + registered backends
 * `POST /analyze` — synchronous reasoning trace; `?overlay=true` returns base64 PNG attention overlay
 * `POST /analyze/stream` — Server-Sent Events. Emits `step` events as each reasoning step lands, then a final `trace` event (schema-equivalent to `/analyze`), then `done`. Supports `?overlay=true` and `?timeout_seconds=<1..300>` (default 30s).
+* `POST /explain` — explainability endpoint. `method: attention | gradcam` are implemented; `method: lime | shap` return 501 (roadmap). Returns the heatmap, top-k attended regions with normalised image-relative bboxes, and an optional base64 PNG overlay (`?overlay=true`). Open `demo/visual.html` for an interactive playground.
 
 ### Recording traces
 
