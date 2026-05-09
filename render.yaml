@@ -1,0 +1,24 @@
+# Render.com deployment manifest for the Miru explainability API.
+#
+# Deploy:
+#   1. Push to a Render-connected git remote
+#   2. New + Web Service + select repo + render.yaml is auto-detected
+#
+# The Dockerfile lives at api/Dockerfile and the build context is the
+# repo root so the miru/ package is included.
+
+services:
+  - type: web
+    name: miru-api
+    runtime: docker
+    plan: starter
+    region: oregon
+    dockerfilePath: ./api/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: PORT
+        value: "8000"

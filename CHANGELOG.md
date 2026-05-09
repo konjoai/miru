@@ -5,6 +5,45 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [Unreleased] — Phase 10: deployable REST API
+
+### Added
+
+#### `api/` — deployable explainability surface
+- `api/main.py` — FastAPI app with five endpoints:
+  - `GET  /health`     — status, version, registered backends, implemented methods
+  - `GET  /methods`    — explanation methods (implemented + roadmap) and registered models
+  - `POST /explain`    — saliency/attention map for one (image, model, method); returns
+    base64 PNG overlay, attention grid, top-k regions, latency
+  - `POST /benchmark`  — drives `miru.bench.runner.run_benchmark` over the synth GT-mask
+    harness; returns aggregate IoU / AUC-ROC / hit@1 / latency stats (mean, std, p50, p95)
+  - `POST /compare`    — paired comparison of two backends via `compare_backends`; returns
+    per-metric stats for each side, paired delta, paired-t statistic, and a winner verdict
+- `method` field is honest about scope: only `attention` is implemented; `gradcam | lime |
+  shap` are listed as roadmap and rejected with **400 + clear message** rather than silently
+  falling back to attention extraction
+- `n` capped at 100, `size` capped at 128 — bounded compute on a public deploy
+- CORS middleware open by default for browser clients (dashboard / playgrounds)
+
+#### Deployment
+- `api/requirements.txt` — runtime deps (fastapi, uvicorn, pydantic, numpy, Pillow)
+- `api/Dockerfile` — slim Python 3.11 image, non-root user, `$PORT` honoured
+- `render.yaml` — Render.com web service manifest pointing at `api/Dockerfile`
+
+#### Tests
+- `api/test_api.py` — 13 tests covering: health, methods listing, explain happy path with
+  a real synthetic 16×16 PNG, malformed-image / unknown-model / roadmap-method / unknown-method
+  400 contracts, benchmark aggregation shape and `n`-cap rejection, `mock`-vs-`mock` compare
+  is a perfect tie
+
+### Notes
+- Distinct from the in-package `miru/api/` router (the dev server) — `api/` is the
+  deployable artefact and depends on the `miru` package as a library.
+- 237 tests pass (13 new in `api/`, 224 existing); 4 real-backend tests still skip without
+  `MIRU_TEST_REAL_BACKENDS=1`.
+
+---
+
 ## [1.1.0] — 2026-05-09
 
 ### Added
