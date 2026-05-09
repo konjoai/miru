@@ -6,7 +6,7 @@ import time
 
 import numpy as np
 from fastapi import APIRouter, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from miru.api.streaming import stream_analyze
 from miru.config import settings
@@ -19,6 +19,13 @@ from miru.schemas import (
     ImageInput,
     ReasoningTrace,
 )
+
+try:
+    from miru.metrics import MiruMetrics
+
+    _metrics = MiruMetrics()
+except ImportError:
+    _metrics = None  # type: ignore[assignment]
 
 # ---------------------------------------------------------------------------
 # Initialise backend registry once at module import time.
@@ -43,6 +50,21 @@ def health() -> HealthResponse:
         status="ok",
         version=settings.version,
         backends=registry.available(),
+    )
+
+
+@router.get("/metrics")
+def metrics() -> Response:
+    """Return Prometheus metrics in text exposition format.
+
+    Returns a 404 if prometheus-client is not installed.
+    """
+    if _metrics is None:
+        return Response("Metrics not available: prometheus-client not installed", status_code=404)
+
+    return Response(
+        _metrics.render(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
     )
 
 
@@ -75,7 +97,11 @@ def analyze(
 
     t0 = time.perf_counter()
     vlm_output = backend.infer(image_array, payload.question)
-    latency_ms = (time.perf_counter() - t0) * 1_000.0
+    latency_s = time.perf_counter() - t0
+    latency_ms = latency_s * 1_000.0
+
+    if _metrics is not None:
+        _metrics.observe_analyze(backend.name, latency_s)
 
     trace = _tracer.trace(
         vlm_output,
@@ -117,18 +143,25 @@ def analyze_stream(
     except KeyError:
         backend = registry.get(settings.default_backend)
 
-    generator = stream_analyze(
-        backend,
-        image_array,
-        payload.question,
-        image_b64=payload.image_b64,
-        overlay=overlay,
-        timeout_seconds=timeout_seconds,
-        record=True,
-    )
+    async def _timed_generator():
+        """Wrapper that records stream latency after streaming completes."""
+        t0 = time.perf_counter()
+        async for chunk in stream_analyze(
+            backend,
+            image_array,
+            payload.question,
+            image_b64=payload.image_b64,
+            overlay=overlay,
+            timeout_seconds=timeout_seconds,
+            record=True,
+        ):
+            yield chunk
+        latency_s = time.perf_counter() - t0
+        if _metrics is not None:
+            _metrics.observe_stream(backend.name, latency_s)
 
     return StreamingResponse(
-        generator,
+        _timed_generator(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

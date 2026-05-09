@@ -271,10 +271,147 @@ def encode_png_b64(image_rgba: np.ndarray) -> str:
     return base64.b64encode(png_bytes).decode("ascii")
 
 
+def _decode_png_pure(raw: bytes) -> np.ndarray:
+    """Minimal pure-Python PNG decoder for RGBA uint8 arrays.
+
+    Supports 8-bit RGBA only.  Parses IHDR, concatenates IDAT chunks,
+    decompresses, unfilters scanlines, and reconstructs the pixel array.
+
+    Args:
+        raw: PNG file bytes (magic + chunks).
+
+    Returns:
+        (H, W, 4) uint8 RGBA array.
+
+    Raises:
+        ValueError: On invalid PNG format, missing IHDR/IDAT, or decompression failure.
+    """
+    if len(raw) < 8 or raw[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("Invalid PNG magic bytes")
+
+    # Parse chunks: [length (4)] [type (4)] [data (length)] [crc (4)]
+    pos = 8
+    ihdr_data = None
+    idat_bytes = bytearray()
+
+    while pos < len(raw):
+        if pos + 8 > len(raw):
+            raise ValueError("Truncated PNG chunk header")
+
+        length = struct.unpack(">I", raw[pos : pos + 4])[0]
+        chunk_type = raw[pos + 4 : pos + 8]
+        pos += 8
+
+        if pos + length > len(raw):
+            raise ValueError(f"Truncated PNG chunk data: {chunk_type}")
+
+        chunk_data = raw[pos : pos + length]
+        pos += length + 4  # skip CRC
+
+        if chunk_type == b"IHDR":
+            ihdr_data = chunk_data
+        elif chunk_type == b"IDAT":
+            idat_bytes.extend(chunk_data)
+        elif chunk_type == b"IEND":
+            break
+
+    if ihdr_data is None:
+        raise ValueError("PNG missing IHDR chunk")
+    if not idat_bytes:
+        raise ValueError("PNG missing IDAT chunk")
+
+    # Parse IHDR: width (4), height (4), bit_depth (1), color_type (1), ...
+    if len(ihdr_data) < 13:
+        raise ValueError("IHDR data too short")
+
+    width = struct.unpack(">I", ihdr_data[0:4])[0]
+    height = struct.unpack(">I", ihdr_data[4:8])[0]
+    bit_depth = ihdr_data[8]
+    color_type = ihdr_data[9]
+
+    if color_type != 6 or bit_depth != 8:
+        raise ValueError(f"PNG decoder supports only 8-bit RGBA (got color_type={color_type}, bit_depth={bit_depth})")
+
+    # Decompress IDAT data
+    try:
+        decompressed = zlib.decompress(bytes(idat_bytes))
+    except zlib.error as exc:
+        raise ValueError(f"PNG IDAT decompression failed: {exc}") from exc
+
+    # Unfilter: each scanline is [filter_type (1)] [4·width bytes (RGBA)]
+    bytes_per_pixel = 4
+    scanline_bytes = bytes_per_pixel * width
+    filtered_size = height * (1 + scanline_bytes)
+
+    if len(decompressed) < filtered_size:
+        raise ValueError(f"PNG IDAT decompressed size mismatch: expected {filtered_size}, got {len(decompressed)}")
+
+    # Reconstruct unfiltered scanlines
+    unfiltered = bytearray()
+    for row_idx in range(height):
+        offset = row_idx * (1 + scanline_bytes)
+        filter_type = decompressed[offset]
+        scanline = bytearray(decompressed[offset + 1 : offset + 1 + scanline_bytes])
+
+        if filter_type == 0:  # None
+            unfiltered.extend(scanline)
+        elif filter_type == 1:  # Sub: X = raw[x] + left[x]
+            for x in range(bytes_per_pixel, len(scanline)):
+                scanline[x] = (scanline[x] + scanline[x - bytes_per_pixel]) & 0xFF
+            unfiltered.extend(scanline)
+        elif filter_type == 2:  # Up: X = raw[x] + up[x]
+            if row_idx == 0:
+                unfiltered.extend(scanline)
+            else:
+                prev_row = unfiltered[-scanline_bytes : len(unfiltered)]
+                for x in range(len(scanline)):
+                    scanline[x] = (scanline[x] + prev_row[x]) & 0xFF
+                unfiltered.extend(scanline)
+        elif filter_type == 3:  # Average: X = raw[x] + floor((left[x] + up[x]) / 2)
+            for x in range(len(scanline)):
+                left = scanline[x - bytes_per_pixel] if x >= bytes_per_pixel else 0
+                up = (
+                    unfiltered[len(unfiltered) - scanline_bytes + x]
+                    if row_idx > 0
+                    else 0
+                )
+                scanline[x] = (scanline[x] + (left + up) // 2) & 0xFF
+            unfiltered.extend(scanline)
+        elif filter_type == 4:  # Paeth: X = raw[x] + paeth(left, up, up-left)
+            def paeth(a: int, b: int, c: int) -> int:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                if pa <= pb and pa <= pc:
+                    return a
+                elif pb <= pc:
+                    return b
+                return c
+
+            for x in range(len(scanline)):
+                left = scanline[x - bytes_per_pixel] if x >= bytes_per_pixel else 0
+                if row_idx > 0:
+                    up = unfiltered[len(unfiltered) - scanline_bytes + x]
+                    upleft = (
+                        unfiltered[len(unfiltered) - 2 * scanline_bytes + x - bytes_per_pixel]
+                        if x >= bytes_per_pixel
+                        else 0
+                    )
+                else:
+                    up = upleft = 0
+                scanline[x] = (scanline[x] + paeth(left, up, upleft)) & 0xFF
+            unfiltered.extend(scanline)
+        else:
+            raise ValueError(f"Unknown PNG filter type: {filter_type}")
+
+    # Reshape to (height, width, 4) RGBA
+    return np.frombuffer(unfiltered, dtype=np.uint8).reshape(height, width, 4)
+
+
 def decode_image_b64(b64_str: str) -> np.ndarray:
     """Decode a base64 image string (PNG/JPEG/etc.) to an RGBA uint8 array.
 
-    Requires Pillow.  Returns an (H, W, 4) uint8 RGBA array.
+    Uses Pillow when available; falls back to a minimal pure-Python PNG decoder
+    for 8-bit RGBA PNG files.  Returns an (H, W, 4) uint8 RGBA array.
 
     Args:
         b64_str: Base64-encoded image bytes (no ``data:`` prefix needed).
@@ -283,19 +420,19 @@ def decode_image_b64(b64_str: str) -> np.ndarray:
         (H, W, 4) uint8 RGBA numpy array.
 
     Raises:
-        ImportError: If Pillow is not installed.
-        ValueError: If the bytes cannot be decoded as a valid image.
+        ValueError: If the image format is not supported or cannot be decoded.
     """
-    if not _HAVE_PIL:
-        raise ImportError("Pillow is required for decode_image_b64; install with: pip install Pillow")
-
     raw = base64.b64decode(b64_str)
-    try:
-        pil_img = _PILImage.open(io.BytesIO(raw)).convert("RGBA")
-    except Exception as exc:
-        raise ValueError(f"Cannot decode image from base64 payload: {exc}") from exc
 
-    return np.asarray(pil_img, dtype=np.uint8)
+    if _HAVE_PIL:
+        try:
+            pil_img = _PILImage.open(io.BytesIO(raw)).convert("RGBA")
+            return np.asarray(pil_img, dtype=np.uint8)
+        except Exception as exc:
+            raise ValueError(f"Cannot decode image from base64 payload: {exc}") from exc
+
+    # Pure-Python PNG decoder fallback for standard test usage
+    return _decode_png_pure(raw)
 
 
 def generate_overlay(
