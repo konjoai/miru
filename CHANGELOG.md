@@ -5,6 +5,86 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [1.1.0] — 2026-05-09
+
+### Added
+
+#### Grad-CAM explainer (`miru/gradcam.py`)
+- `compute_gradcam(activations, gradients) -> np.ndarray` — pure-NumPy core.
+  Implements Selvaraju et al., 2017: `α_k^c = mean_{i,j} ∂y^c/∂A^k_{ij}`,
+  heatmap `L^c = ReLU(Σ_k α_k^c · A^k)`, then min-max to `[0, 1]`. Degenerate
+  (all-negative-evidence) maps return all-zero instead of dividing by ~0.
+- `attention_to_cam(attention) -> np.ndarray` — fallback for ViT backbones.
+  Accepts `(H, W)` or `(heads, seq, seq)`; for the latter, averages heads,
+  drops the [CLS] row, and reshapes to a square patch grid.
+- `top_k_regions(heatmap, k) -> [(row, col, score), ...]` — argpartition-based
+  top-k extractor, sorted score-desc.
+- `GradCAMExplainer(model, target_layer=None)` — torch-aware explainer.
+  Auto-finds the last `Conv2d` via `model.modules()`; if none exist (pure ViT
+  case), sets `uses_attention_fallback=True` and uses
+  `output.attentions[-1]` from a forward pass.
+- Forward + full-backward hooks capture activations and gradients without
+  retain_graph; `torch` is imported lazily inside the hook path so the module
+  loads cleanly without torch installed.
+- `GradCAMResult(heatmap, top_regions, target_class, used_fallback)` — frozen
+  dataclass returned by every entry point.
+
+#### `POST /explain` endpoint (`miru/api/routes.py`)
+- `method: gradcam` — **implemented** (M11 ship gate). Falls back to the
+  attention-weight method when the active backend has no Conv2d layers.
+- `method: attention` — implemented (raw VLM attention).
+- `method: lime` / `method: shap` — return `501` with status `roadmap`.
+- `method: <unknown>` — returns `422`.
+- `top_regions` carry normalised image-relative bboxes (`bbox_x1..y2 ∈ [0, 1]`)
+  so demo callers can scale them against the rendered image without knowing
+  the heatmap resolution.
+- `?overlay=true` query param wires the heatmap through
+  `miru.visualization.overlay.generate_overlay` for a base64 PNG.
+- `EXPLAIN_METHODS: dict[str, str]` exported as the canonical method registry.
+
+#### Visual demo (`demo/visual.html`)
+- Interactive single-page explorer for `/explain`. Dark theme matching
+  `demo/index.html` design tokens.
+- Three bundled procedural sample images (`demo/sample_images/blob.png`,
+  `two_blobs.png`, `gradient.png`) generated with the in-repo pure-zlib PNG
+  encoder — no external assets, no Pillow runtime dependency for CI.
+- Method selector (attention | gradcam), backend selector, free-form question.
+- Side-by-side: original image with SVG bounding-box overlay vs. heatmap
+  overlay PNG.  When the API can't render the overlay (no Pillow), the page
+  falls back to a client-side jet-colormap canvas render of the raw heatmap.
+- Top-5 attended regions table with score bars and (row, col) +
+  (x1, y1, x2, y2) bbox coords.
+- Posts to same-origin `/explain?overlay=true` by default; configurable via
+  the `API_BASE` constant at the top of the script.
+
+#### Tests (`tests/test_gradcam.py`) — 22 new tests
+- Pure-numpy core: shape/dtype, normalisation range, ReLU kills negative
+  evidence, single-channel hot-spot localisation, shape-mismatch raise,
+  reject-non-3-D.
+- Attention fallback: 2-D pass-through, multi-head collapse to (7, 7) for
+  `(12, 50, 50)`, uniform-input zeros.
+- `top_k_regions` ordering and `k <= 0` edge.
+- `GradCAMExplainer.from_arrays` returns the dataclass; `from_attention`
+  marks `used_fallback=True`; `explain()` without a model raises;
+  `_find_last_conv` returns `None` for objects without `.modules()`.
+- `/explain` endpoint: attention 200, **gradcam 200** (M11 gate),
+  bbox normalised to `[0, 1]`, lime 501, unknown 422, overlay query string,
+  unknown-backend fallback to default.
+
+### Changed
+- `miru/__init__.py`, `miru/config.py`, `pyproject.toml` — version 1.0.0 → 1.1.0.
+- `tests/test_api.py` — `/health` version assertion updated to 1.1.0
+  (previously stuck at 0.7.0; pre-existing drift).
+- `miru/__init__.py` — re-exports `GradCAMExplainer`, `GradCAMResult`,
+  `compute_gradcam`.
+- `miru/schemas.py` — adds `ExplainRequest`, `ExplainResponse`, `ExplainRegion`.
+
+### Test results
+- 246 / 246 passing (4 skipped — gated CLIP real-backend tests)
+- All 224 prior tests still pass
+
+---
+
 ## [0.7.0] — 2026-05-05
 
 ### Added

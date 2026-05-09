@@ -82,3 +82,54 @@ class ErrorResponse(BaseModel):
 
     error: str
     detail: str
+
+
+class ExplainRequest(BaseModel):
+    """Request payload for /explain.
+
+    ``method`` selects the explainability technique:
+      * ``attention`` — collapse the backend's raw attention map.
+      * ``gradcam`` — Grad-CAM (falls back to attention for ViT backbones).
+      * ``lime`` / ``shap`` — roadmap; returns 501.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    image_b64: str
+    question: str = ""
+    backend: str = "mock"
+    method: str = "attention"
+    target_class: int | None = None
+    top_k: int = 5
+
+
+class ExplainRegion(BaseModel):
+    """One top-attended region in the heatmap grid."""
+
+    model_config = ConfigDict(frozen=True)
+
+    row: int
+    col: int
+    score: float
+    bbox_x1: float  # normalised image coords in [0, 1]
+    bbox_y1: float
+    bbox_x2: float
+    bbox_y2: float
+
+
+class ExplainResponse(BaseModel):
+    """Response payload for /explain."""
+
+    model_config = ConfigDict(frozen=True)
+
+    method: str
+    status: str  # "implemented" | "roadmap"
+    backend: str
+    answer: str
+    width: int
+    height: int
+    heatmap: list[list[float]]
+    top_regions: list[ExplainRegion]
+    used_fallback: bool
+    overlay_b64: str | None = None
+    latency_ms: float

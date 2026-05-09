@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Miru — Visual Explainability Demo</title>
+<style>
+  :root {
+    --bg-0: #050609;
+    --bg-1: #0a0c12;
+    --bg-2: #11141d;
+    --bg-3: #1a1f2e;
+    --line: #1f2433;
+    --line-2: #2c3245;
+    --fg-0: #ecf0fa;
+    --fg-1: #a3a9bd;
+    --fg-2: #6b7088;
+    --accent: #7ad7ff;
+    --accent-2: #b08cff;
+    --accent-3: #ff8ad3;
+    --warn: #ff4d6d;
+    --grad: linear-gradient(135deg, #7ad7ff 0%, #b08cff 50%, #ff8ad3 100%);
+    --mono: ui-monospace, "JetBrains Mono", "Fira Code", "SF Mono", Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg-0);
+    color: var(--fg-0);
+    font-family: var(--sans);
+    line-height: 1.55;
+    background-image:
+      radial-gradient(ellipse 90% 60% at 50% -10%, rgba(176, 140, 255, 0.18), transparent 60%),
+      radial-gradient(ellipse 60% 40% at 90% 30%, rgba(122, 215, 255, 0.08), transparent 60%);
+    min-height: 100vh;
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 56px 24px 96px; }
+  h1 {
+    margin: 0 0 8px;
+    font-size: 36px;
+    letter-spacing: -0.02em;
+    background: var(--grad);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .lede { color: var(--fg-1); font-size: 17px; margin: 0 0 32px; max-width: 640px; }
+  .panel {
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 24px;
+    margin-bottom: 24px;
+  }
+  .panel h2 {
+    margin: 0 0 16px;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--fg-2);
+    font-weight: 600;
+  }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 180px; }
+  .field label {
+    font-size: 12px;
+    color: var(--fg-2);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  input[type=text], select {
+    background: var(--bg-2);
+    border: 1px solid var(--line-2);
+    color: var(--fg-0);
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-family: var(--sans);
+    font-size: 14px;
+    transition: border-color .15s;
+  }
+  input[type=text]:focus, select:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  button {
+    background: var(--grad);
+    color: #06070b;
+    border: none;
+    padding: 12px 20px;
+    border-radius: 8px;
+    font-family: var(--sans);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    letter-spacing: 0.02em;
+    transition: transform .1s, box-shadow .15s;
+  }
+  button:hover { transform: translateY(-1px); box-shadow: 0 6px 24px rgba(176,140,255,0.25); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+  button.secondary {
+    background: var(--bg-2);
+    color: var(--fg-0);
+    border: 1px solid var(--line-2);
+  }
+  .samples { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .sample {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+    cursor: pointer;
+    background: var(--bg-2);
+    transition: border-color .15s, transform .1s;
+    position: relative;
+  }
+  .sample:hover { border-color: var(--accent-2); }
+  .sample.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(122,215,255,0.25); }
+  .sample img { width: 100%; height: 140px; object-fit: cover; display: block; }
+  .sample .caption {
+    padding: 8px 10px;
+    font-size: 12px;
+    color: var(--fg-1);
+    border-top: 1px solid var(--line);
+  }
+  .results { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  @media (max-width: 760px) { .results { grid-template-columns: 1fr; } }
+  .result-tile {
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .result-tile h3 {
+    margin: 0;
+    padding: 10px 14px;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--fg-2);
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    justify-content: space-between;
+  }
+  .canvas-wrap {
+    position: relative;
+    background: #000;
+    aspect-ratio: 1 / 1;
+  }
+  .canvas-wrap canvas, .canvas-wrap img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+  }
+  .bbox-layer { position: absolute; inset: 0; pointer-events: none; }
+  .bbox-layer rect {
+    fill: rgba(122,215,255,0.10);
+    stroke: var(--accent);
+    stroke-width: 1.5;
+    vector-effect: non-scaling-stroke;
+  }
+  .bbox-layer text {
+    fill: var(--accent);
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 600;
+  }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    font-size: 13px;
+    color: var(--fg-1);
+    font-family: var(--mono);
+    margin-top: 16px;
+    padding: 12px 14px;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+  .meta strong { color: var(--fg-0); font-weight: 600; }
+  .meta .pill {
+    display: inline-flex;
+    padding: 2px 8px;
+    background: var(--bg-3);
+    border: 1px solid var(--line-2);
+    border-radius: 999px;
+    font-size: 11px;
+    align-items: center;
+    gap: 4px;
+  }
+  .pill.ok::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #69e896; }
+  .pill.fallback::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent-2); }
+  table.regions {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+  table.regions th, table.regions td {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  table.regions th {
+    color: var(--fg-2);
+    font-weight: 500;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  table.regions tr:last-child td { border-bottom: none; }
+  table.regions td.score { color: var(--accent); }
+  .score-bar {
+    display: inline-block;
+    height: 6px;
+    background: var(--grad);
+    border-radius: 3px;
+    vertical-align: middle;
+    margin-right: 8px;
+  }
+  .empty {
+    padding: 32px;
+    text-align: center;
+    color: var(--fg-2);
+    font-style: italic;
+  }
+  .error {
+    background: rgba(255, 77, 109, 0.08);
+    border: 1px solid var(--warn);
+    color: #ffb0bd;
+    padding: 12px 14px;
+    border-radius: 8px;
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+  code { font-family: var(--mono); color: var(--accent); }
+  footer {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--line);
+    color: var(--fg-2);
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Visual Explainability</h1>
+  <p class="lede">
+    See exactly where Miru is looking. Compare attention maps to Grad-CAM and find the
+    top-attended regions for any image. The heatmap is what the model thinks matters; the
+    boxes are the highest-scoring grid cells.
+  </p>
+
+  <section class="panel">
+    <h2>1 — Pick an image</h2>
+    <div class="samples" id="samples"></div>
+    <div class="row" style="margin-top: 16px">
+      <div class="field" style="flex: 2">
+        <label>or upload your own</label>
+        <input type="file" id="file" accept="image/*" />
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>2 — Configure</h2>
+    <div class="row">
+      <div class="field">
+        <label>Method</label>
+        <select id="method">
+          <option value="attention">Attention (raw VLM)</option>
+          <option value="gradcam">Grad-CAM</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Backend</label>
+        <select id="backend">
+          <option value="mock">mock (deterministic)</option>
+          <option value="clip">clip (if available)</option>
+        </select>
+      </div>
+      <div class="field" style="flex: 2">
+        <label>Question</label>
+        <input id="question" type="text" value="What is the most salient object?" />
+      </div>
+      <div class="field" style="flex: 0 0 auto">
+        <label style="visibility: hidden">go</label>
+        <button id="run" type="button">Explain</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="result-panel" style="display: none">
+    <h2>3 — Result</h2>
+    <div id="error-slot"></div>
+    <div class="results">
+      <div class="result-tile">
+        <h3><span>Original</span><span id="dim-label">—</span></h3>
+        <div class="canvas-wrap">
+          <img id="original-img" alt="original" />
+          <svg class="bbox-layer" id="bbox-svg" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
+        </div>
+      </div>
+      <div class="result-tile">
+        <h3><span>Heatmap overlay</span><span id="grid-label">—</span></h3>
+        <div class="canvas-wrap">
+          <img id="overlay-img" alt="overlay" />
+        </div>
+      </div>
+    </div>
+    <div class="meta" id="meta"></div>
+    <h3 style="margin: 24px 0 12px; font-size: 14px; color: var(--fg-1)">Top-5 attended regions</h3>
+    <table class="regions">
+      <thead>
+        <tr><th>#</th><th>row, col</th><th>bbox (x1, y1, x2, y2)</th><th>score</th></tr>
+      </thead>
+      <tbody id="regions-tbody"></tbody>
+    </table>
+  </section>
+
+  <footer>
+    Posts to <code>POST /explain</code> on this origin. Run the dev server with
+    <code>uvicorn miru.main:app --reload</code> on port 8000 — or change the
+    <code>API_BASE</code> at the top of this file.
+  </footer>
+</main>
+
+<script>
+  const API_BASE = "";  // same-origin by default; set to "http://127.0.0.1:8000" if serving the demo elsewhere
+
+  const SAMPLES = [
+    { name: "Single blob", file: "sample_images/blob.png" },
+    { name: "Two blobs", file: "sample_images/two_blobs.png" },
+    { name: "Gradient + checker", file: "sample_images/gradient.png" },
+  ];
+
+  let selectedImageB64 = null;
+  let selectedImageDataURL = null;
+
+  // ----------------------------------------------------------------
+  // Sample picker
+  // ----------------------------------------------------------------
+  const samplesEl = document.getElementById("samples");
+  SAMPLES.forEach((s, i) => {
+    const card = document.createElement("div");
+    card.className = "sample" + (i === 0 ? " selected" : "");
+    card.dataset.idx = String(i);
+    card.innerHTML = `<img src="${s.file}" alt="${s.name}"><div class="caption">${s.name}</div>`;
+    card.onclick = () => selectSample(i);
+    samplesEl.appendChild(card);
+  });
+
+  async function selectSample(idx) {
+    document.querySelectorAll(".sample").forEach((c, i) => c.classList.toggle("selected", i === idx));
+    const file = SAMPLES[idx].file;
+    const resp = await fetch(file);
+    const blob = await resp.blob();
+    await loadImageBlob(blob);
+  }
+
+  document.getElementById("file").addEventListener("change", async (ev) => {
+    const file = ev.target.files[0];
+    if (!file) return;
+    document.querySelectorAll(".sample").forEach((c) => c.classList.remove("selected"));
+    await loadImageBlob(file);
+  });
+
+  // ----------------------------------------------------------------
+  // Image loading: produce both an `image_b64` payload (raw RGB bytes
+  // base64-encoded — what `_decode_image` in the API expects) and a
+  // dataURL for display.
+  // ----------------------------------------------------------------
+  async function loadImageBlob(blob) {
+    const dataURL = await new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+      r.readAsDataURL(blob);
+    });
+    selectedImageDataURL = dataURL;
+
+    // Decode to RGB bytes via canvas, then base64-encode for the API.
+    const img = new Image();
+    img.src = dataURL;
+    await img.decode();
+    const SIDE = 64;  // small square — keeps payload tiny
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = SIDE;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, 0, 0, SIDE, SIDE);
+    const rgba = ctx.getImageData(0, 0, SIDE, SIDE).data;
+    const rgb = new Uint8Array(SIDE * SIDE * 3);
+    for (let i = 0, j = 0; i < rgba.length; i += 4, j += 3) {
+      rgb[j] = rgba[i];
+      rgb[j + 1] = rgba[i + 1];
+      rgb[j + 2] = rgba[i + 2];
+    }
+    selectedImageB64 = bytesToB64(rgb);
+  }
+
+  function bytesToB64(bytes) {
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+
+  // Initial sample selection.
+  selectSample(0);
+
+  // ----------------------------------------------------------------
+  // Run /explain
+  // ----------------------------------------------------------------
+  document.getElementById("run").addEventListener("click", runExplain);
+
+  async function runExplain() {
+    const errSlot = document.getElementById("error-slot");
+    errSlot.innerHTML = "";
+    if (!selectedImageB64) {
+      errSlot.innerHTML = `<div class="error">Pick or upload an image first.</div>`;
+      return;
+    }
+
+    const payload = {
+      image_b64: selectedImageB64,
+      question: document.getElementById("question").value,
+      method: document.getElementById("method").value,
+      backend: document.getElementById("backend").value,
+      top_k: 5,
+    };
+
+    const btn = document.getElementById("run");
+    btn.disabled = true;
+    btn.textContent = "Explaining…";
+    try {
+      const resp = await fetch(`${API_BASE}/explain?overlay=true`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (resp.status === 501) {
+        const body = await resp.json();
+        errSlot.innerHTML = `<div class="error">${body.detail || "Method on roadmap"}</div>`;
+        return;
+      }
+      if (!resp.ok) {
+        const text = await resp.text();
+        errSlot.innerHTML = `<div class="error">HTTP ${resp.status}: ${escapeHtml(text)}</div>`;
+        return;
+      }
+      const data = await resp.json();
+      renderResult(data);
+    } catch (err) {
+      errSlot.innerHTML = `<div class="error">Network error — is the API running on ${API_BASE || "this origin"}? (${err.message})</div>`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Explain";
+    }
+  }
+
+  // ----------------------------------------------------------------
+  // Rendering
+  // ----------------------------------------------------------------
+  function renderResult(data) {
+    document.getElementById("result-panel").style.display = "";
+    document.getElementById("original-img").src = selectedImageDataURL;
+    if (data.overlay_b64) {
+      document.getElementById("overlay-img").src = "data:image/png;base64," + data.overlay_b64;
+    } else {
+      // No overlay returned (Pillow missing or backend mismatch) — render the raw heatmap.
+      document.getElementById("overlay-img").src = renderHeatmapToDataURL(data.heatmap);
+    }
+    document.getElementById("dim-label").textContent = `${data.width}×${data.height} grid`;
+    document.getElementById("grid-label").textContent = `${data.method} · ${data.backend}`;
+
+    // Bounding boxes on the original image.
+    const svg = document.getElementById("bbox-svg");
+    svg.innerHTML = "";
+    data.top_regions.forEach((r, i) => {
+      const x = r.bbox_x1 * 100;
+      const y = r.bbox_y1 * 100;
+      const w = (r.bbox_x2 - r.bbox_x1) * 100;
+      const h = (r.bbox_y2 - r.bbox_y1) * 100;
+      svg.insertAdjacentHTML(
+        "beforeend",
+        `<rect x="${x}" y="${y}" width="${w}" height="${h}"/>` +
+        `<text x="${x + 0.5}" y="${y + 4}">${i + 1}</text>`,
+      );
+    });
+
+    // Meta strip.
+    const fallback = data.used_fallback
+      ? `<span class="pill fallback">attention fallback</span>`
+      : `<span class="pill ok">native</span>`;
+    document.getElementById("meta").innerHTML = `
+      <span><strong>method</strong> ${data.method} (${data.status})</span>
+      <span><strong>backend</strong> ${data.backend}</span>
+      <span><strong>answer</strong> ${escapeHtml(data.answer)}</span>
+      <span><strong>latency</strong> ${data.latency_ms.toFixed(2)} ms</span>
+      ${fallback}
+    `;
+
+    // Top-regions table.
+    const tbody = document.getElementById("regions-tbody");
+    tbody.innerHTML = "";
+    data.top_regions.forEach((r, i) => {
+      const barWidth = Math.max(2, Math.round(r.score * 80));
+      tbody.insertAdjacentHTML(
+        "beforeend",
+        `<tr>
+          <td>${i + 1}</td>
+          <td>(${r.row}, ${r.col})</td>
+          <td>(${r.bbox_x1.toFixed(3)}, ${r.bbox_y1.toFixed(3)}, ${r.bbox_x2.toFixed(3)}, ${r.bbox_y2.toFixed(3)})</td>
+          <td class="score"><span class="score-bar" style="width:${barWidth}px"></span>${r.score.toFixed(3)}</td>
+        </tr>`,
+      );
+    });
+  }
+
+  function renderHeatmapToDataURL(grid) {
+    const h = grid.length, w = grid[0].length;
+    const c = document.createElement("canvas");
+    c.width = w; c.height = h;
+    const ctx = c.getContext("2d");
+    const img = ctx.createImageData(w, h);
+    for (let r = 0; r < h; r++) {
+      for (let cc = 0; cc < w; cc++) {
+        const t = grid[r][cc];
+        const [R, G, B] = jet(t);
+        const idx = (r * w + cc) * 4;
+        img.data[idx] = R; img.data[idx + 1] = G; img.data[idx + 2] = B; img.data[idx + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    return c.toDataURL("image/png");
+  }
+
+  function jet(t) {
+    t = Math.max(0, Math.min(1, t));
+    let R = 0, G = 0, B = 0;
+    if (t <= 0.125) { R = 0; G = 0; B = 128 + 127 * (t / 0.125); }
+    else if (t <= 0.375) { R = 0; G = 255 * ((t - 0.125) / 0.25); B = 255; }
+    else if (t <= 0.625) { const s = (t - 0.375) / 0.25; R = 255 * s; G = 255; B = 255 * (1 - s); }
+    else if (t <= 0.875) { R = 255; G = 255 * (1 - (t - 0.625) / 0.25); B = 0; }
+    else { R = 255 * (1 - 0.5 * (t - 0.875) / 0.125); G = 0; B = 0; }
+    return [Math.round(R), Math.round(G), Math.round(B)];
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+  }
+</script>
+</body>
+</html>

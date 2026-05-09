@@ -1,8 +1,8 @@
 # PLAN.md — Miru Roadmap
 
 **Project:** Miru — Multimodal Reasoning Tracer  
-**Current version:** v0.9.0  
-**Status:** Latency profiler complete, 196 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
+**Current version:** v1.1.0  
+**Status:** Grad-CAM + visual explainability demo, 246 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 
@@ -185,10 +185,71 @@ skip without `MIRU_TEST_REAL_BACKENDS=1`.
 
 ---
 
-## Phase 10 — TBD
+## Phase 10 — Prometheus Metrics + PNG Decoder Fallback (v1.0.0) ✅ COMPLETE
+
+**Goal:** Production observability and an offline-safe PNG decoder.
+
+**Delivered:**
+- `miru/metrics.py` — `MiruMetrics` wrapping `prometheus-client`; `/metrics`
+  endpoint in `miru/api/routes.py` exposing per-backend latency histograms
+  for `/analyze` and `/analyze/stream`. Returns 404 when prometheus-client
+  is not installed; never crashes the request path.
+- `miru/visualization/overlay.py` — pure-zlib PNG decoder fallback so
+  `decode_image_b64` works without Pillow. Used by the visual demo's
+  procedural sample-image generation step.
+- `pyproject.toml` — `[metrics]` optional extras; `prometheus-client` added
+  to `[dev]`.
+
+**Ship gate:** 224 / 224 tests passing.
+
+---
+
+## Phase 11 — Grad-CAM + Visual Demo (v1.1.0) ✅ COMPLETE
+
+**Goal:** Implement Grad-CAM (Selvaraju et al., 2017) and ship an interactive
+explainability demo that lets a developer compare attention vs. Grad-CAM on
+their own images.
+
+**Delivered:**
+- `miru/gradcam.py` — `compute_gradcam(activations, gradients)` pure-NumPy
+  core; `attention_to_cam(attention)` ViT fallback (multi-head collapse →
+  square patch grid); `GradCAMExplainer` with auto-detected last `Conv2d`,
+  forward + full-backward hooks for hook-based gradient capture, and
+  graceful fallback when the model exposes no conv layers; `GradCAMResult`
+  frozen dataclass.
+- `POST /explain` endpoint — `method: attention | gradcam` both implemented;
+  `method: lime | shap` return `501` (roadmap); unknown methods return `422`.
+  Top regions carry normalised `[0, 1]` image-relative bboxes.
+- `EXPLAIN_METHODS` dict — canonical implemented/roadmap registry exported
+  from `miru.api.routes`.
+- `demo/visual.html` — single-page interactive demo. Dark theme, three
+  procedural sample images (`demo/sample_images/`), method/backend/question
+  selectors, side-by-side original (with SVG bbox overlay) vs. heatmap
+  overlay, top-5 regions table with score bars. Pure same-origin `fetch` to
+  `/explain?overlay=true`; client-side jet-colormap canvas fallback when
+  the server can't render an overlay.
+- `tests/test_gradcam.py` — 22 new tests across the numeric core, the
+  attention fallback, the explainer entry points, and the API endpoint
+  (including the M11 ship gate: `gradcam` returns 200).
+- `miru/__init__.py`, `miru/config.py`, `pyproject.toml` — version 1.0.0 →
+  1.1.0; `tests/test_api.py` health-version assertion updated.
+
+**Ship gate:** 246 / 246 tests pass; 4 real-backend tests skip without
+`MIRU_TEST_REAL_BACKENDS=1`; all 224 prior tests still pass.
+
+---
+
+## Phase 12 — TBD
 
 Open candidates:
-- Native VLM streaming backend (LLaVA / Idefics / Qwen-VL with token-level attention) so `/analyze/stream` produces genuinely incremental reasoning instead of replaying a single-shot inference.
-- Real-image benchmark slice: plug VQA-X or COCO-Saliency behind the existing metric interface and publish the curve alongside the synthetic baseline.
-- gRPC alternative to the FastAPI surface for in-cluster low-latency inference.
-- Prometheus metrics endpoint (`/metrics`) exposing per-backend latency histograms from live `/analyze` traffic.
+- True Grad-CAM run against a torch-loaded CLIP-RN50 checkpoint (RN50 has
+  conv layers, unlike ViT-B/32) — drop-in `clip-rn` backend + benchmark
+  comparison to attention-fallback Grad-CAM.
+- LIME / SHAP perturbation-based explainers behind the same `/explain`
+  surface — `method: lime` flips from `roadmap` → `implemented`.
+- Native VLM streaming backend (LLaVA / Idefics / Qwen-VL with token-level
+  attention) so `/analyze/stream` produces genuinely incremental reasoning
+  instead of replaying a single-shot inference.
+- Real-image benchmark slice: plug VQA-X or COCO-Saliency behind the
+  existing metric interface and publish the curve alongside the synthetic
+  baseline.
