@@ -5,6 +5,116 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [Unreleased] — Phase 13: LIME, GradCAM, side-by-side compare, eye UI
+
+### Added
+
+#### Two new explainers
+- `miru/lime_explainer.py` — LIME (Ribeiro et al. 2016) for image inputs.
+  Pure-NumPy grid-based superpixel segmentation, mean-colour occlusion of
+  each superpixel, weighted-least-squares surrogate solved with
+  `np.linalg.lstsq`, no scikit-learn dependency. Deterministic under a seed.
+- `miru/gradcam_explainer.py` — occlusion-sensitivity saliency (Zeiler &
+  Fergus 2014). The gradient-free cousin of true Grad-CAM, exposed under
+  the `gradcam` name with an explicit docstring noting that real
+  backprop-based Grad-CAM requires a torch/CNN backend (future work).
+
+#### API
+- `POST /explain/compare` — runs two methods on one image and returns both
+  base64 PNG overlays + saliency grids + top-region rings. Used by the
+  visual demo for side-by-side comparison.
+- `/explain` now dispatches on `method ∈ {attention, lime, gradcam}` —
+  all three return the same response shape so clients are method-agnostic.
+- `/methods` reports lime + gradcam as `implemented`; only `shap` remains
+  on the roadmap.
+- New bounded request fields: `n_samples ≤ 256`, `n_segments ≤ 144`,
+  `occlusion_grid ≤ 16` — keeps a public deploy from being made to do
+  unbounded `backend.infer()` calls per request.
+
+#### Visual demo — `demo/visual.html`
+- A single large stylized eye (pure CSS/SVG) on a deep `#06060f` field.
+  Iris in Konjo purple `#7c3aed` with two independently-rotating ring
+  layers (28s and 16s, opposite directions) and a 4.5s breathing pulse.
+- Image loads **into** the iris — the pupil swells from 130px → 200px
+  and the source image fills it.
+- Heatmap bleeds outward from the pupil with `mix-blend-mode: screen` —
+  the eye is literally focusing its attention on the image.
+- Three method icons: gradient (gradcam), mosaic (lime), waveform
+  (attention). Active one glows.
+- Top-3 regions appear as numbered amber focus rings around their
+  hotspot positions inside the eye, like an iris dilating around
+  regions of interest.
+- "split view" toggle — the single eye divides into two side-by-side
+  eyes via CSS layout transition; left shows attention, right shows
+  the chosen comparison method, both populated by `POST /explain/compare`.
+- Three procedurally-generated 64×64 sample images shown as iris-thumbnail
+  circles below — click to load.
+- Eye blinks once on load (`@keyframes blink`), pupil pulses while idle
+  (`@keyframes pupil-pulse`).
+
+#### Tests
+- `tests/test_explainers.py` — 8 tests covering LIME segmentation, LIME
+  determinism under seed, LIME saliency normalization & shape, GradCAM
+  shape & call-count, plus all input-validation rejections.
+- `api/test_api.py` — 7 new tests for `/explain` parametrized over each
+  implemented method, `/explain/compare` happy path + same-method-rejection
+  + unknown-method-rejection, and a guard on `/methods` reporting lime
+  and gradcam as `implemented`.
+
+### Changed
+- `IMPLEMENTED_METHODS = ("attention", "lime", "gradcam")` (was `("attention",)`).
+- `ROADMAP_METHODS = ("shap",)` (was `("gradcam", "lime", "shap")`).
+- The `roadmap-method-returns-400` test now picks the first roadmap
+  method dynamically so it stays green as methods are promoted.
+
+### Notes
+- 252/252 pass (15 new, 237 existing); 4 real-backend tests still skip
+  without `MIRU_TEST_REAL_BACKENDS=1`.
+- Naming honesty: `gradcam` ships as occlusion-sensitivity (a real,
+  citable saliency method common in XAI toolkits). The `/methods`
+  description and `miru/gradcam_explainer.py` docstring say so explicitly.
+
+---
+
+## [Unreleased] — Phase 10: deployable REST API
+
+### Added
+
+#### `api/` — deployable explainability surface
+- `api/main.py` — FastAPI app with five endpoints:
+  - `GET  /health`     — status, version, registered backends, implemented methods
+  - `GET  /methods`    — explanation methods (implemented + roadmap) and registered models
+  - `POST /explain`    — saliency/attention map for one (image, model, method); returns
+    base64 PNG overlay, attention grid, top-k regions, latency
+  - `POST /benchmark`  — drives `miru.bench.runner.run_benchmark` over the synth GT-mask
+    harness; returns aggregate IoU / AUC-ROC / hit@1 / latency stats (mean, std, p50, p95)
+  - `POST /compare`    — paired comparison of two backends via `compare_backends`; returns
+    per-metric stats for each side, paired delta, paired-t statistic, and a winner verdict
+- `method` field is honest about scope: only `attention` is implemented; `gradcam | lime |
+  shap` are listed as roadmap and rejected with **400 + clear message** rather than silently
+  falling back to attention extraction
+- `n` capped at 100, `size` capped at 128 — bounded compute on a public deploy
+- CORS middleware open by default for browser clients (dashboard / playgrounds)
+
+#### Deployment
+- `api/requirements.txt` — runtime deps (fastapi, uvicorn, pydantic, numpy, Pillow)
+- `api/Dockerfile` — slim Python 3.11 image, non-root user, `$PORT` honoured
+- `render.yaml` — Render.com web service manifest pointing at `api/Dockerfile`
+
+#### Tests
+- `api/test_api.py` — 13 tests covering: health, methods listing, explain happy path with
+  a real synthetic 16×16 PNG, malformed-image / unknown-model / roadmap-method / unknown-method
+  400 contracts, benchmark aggregation shape and `n`-cap rejection, `mock`-vs-`mock` compare
+  is a perfect tie
+
+### Notes
+- Distinct from the in-package `miru/api/` router (the dev server) — `api/` is the
+  deployable artefact and depends on the `miru` package as a library.
+- 237 tests pass (13 new in `api/`, 224 existing); 4 real-backend tests still skip without
+  `MIRU_TEST_REAL_BACKENDS=1`.
+
+---
+
 ## [1.1.0] — 2026-05-09
 
 ### Added
