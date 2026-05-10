@@ -3,553 +3,1528 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Miru — Visual Explainability Demo</title>
+<title>Miru — The Eye</title>
+<!--
+  demo/visual.html — a photorealistic eye that runs real Miru analysis.
+
+  Pure frontend: the only network calls are GET /api/health and POST /api/analyze.
+  Both already exist in demo/server.py. With the server running, image drops
+  produce real ReasoningTracer output; without it, the page falls back to
+  procedurally generated "vision" so the page still demos cold.
+
+  All seven visual enhancements live here:
+    1. Photorealistic iris    — 5-layer construction with conic fibers/crypts
+    2. Pupil dilation         — driven by sampled image brightness
+    3. Micro-saccades         — random translate every 3-5s
+    4. Heatmap fluid bloom    — scale + blur ease-out from focal point
+    5. Two-eyelid blink       — single clip-path with asymmetric upper/lower
+    6. Eye split / compare    — single eye becomes two, each independent
+    7. Sclera redness         — confidence-coupled red tint + brighter veins
+-->
 <style>
+  /* ============================================================
+     Tokens
+     ============================================================ */
   :root {
     --bg-0: #050609;
     --bg-1: #0a0c12;
     --bg-2: #11141d;
-    --bg-3: #1a1f2e;
-    --line: #1f2433;
-    --line-2: #2c3245;
-    --fg-0: #ecf0fa;
+    --line: #1d2230;
+    --line-2: #2a3146;
+    --fg-0: #eef0f7;
     --fg-1: #a3a9bd;
     --fg-2: #6b7088;
+    --fg-3: #4a4e62;
     --accent: #7ad7ff;
     --accent-2: #b08cff;
     --accent-3: #ff8ad3;
-    --warn: #ff4d6d;
+    --green: #69e896;
+    --hot: #ff5e7a;
+    --warm: #f6c177;
+
+    /* Eye anatomy */
+    --flesh-1: #2a1418;       /* deep socket — keeps lid colour from screaming */
+    --flesh-2: #4a2228;
+    --sclera: #f6efe6;        /* slightly warm white */
+    --sclera-shade: #d6cab3;
+    --vein-red: #b62a3a;
+
     --grad: linear-gradient(135deg, #7ad7ff 0%, #b08cff 50%, #ff8ad3 100%);
     --mono: ui-monospace, "JetBrains Mono", "Fira Code", "SF Mono", Consolas, monospace;
-    --sans: -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif;
+    --sans: -apple-system, BlinkMacSystemFont, "Inter", "Helvetica Neue", system-ui, sans-serif;
+
+    /* Sizing */
+    --eye-w: 380px;
+    --eye-h: 230px;
   }
+
   *, *::before, *::after { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
   body {
-    background: var(--bg-0);
+    background: radial-gradient(ellipse 90% 60% at 50% 0%, rgba(176, 140, 255, 0.06), transparent 60%),
+                radial-gradient(ellipse 60% 50% at 50% 100%, rgba(122, 215, 255, 0.05), transparent 60%),
+                var(--bg-0);
     color: var(--fg-0);
     font-family: var(--sans);
-    line-height: 1.55;
-    background-image:
-      radial-gradient(ellipse 90% 60% at 50% -10%, rgba(176, 140, 255, 0.18), transparent 60%),
-      radial-gradient(ellipse 60% 40% at 90% 30%, rgba(122, 215, 255, 0.08), transparent 60%);
+    line-height: 1.5;
     min-height: 100vh;
+    overflow-x: hidden;
   }
-  main { max-width: 1080px; margin: 0 auto; padding: 56px 24px 96px; }
-  h1 {
-    margin: 0 0 8px;
-    font-size: 36px;
-    letter-spacing: -0.02em;
+
+  /* ============================================================
+     Layout
+     ============================================================ */
+  .container { max-width: 1280px; margin: 0 auto; padding: 0 28px; }
+  header.top {
+    border-bottom: 1px solid var(--line);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    background: rgba(5, 6, 9, 0.6);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  header.top .row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 0; gap: 16px;
+  }
+  header.top .brand {
+    display: flex; align-items: center; gap: 12px; font-weight: 600;
+  }
+  header.top .brand .glyph {
+    width: 22px; height: 22px;
+    background: var(--grad); border-radius: 50%;
+    box-shadow: 0 0 18px rgba(176, 140, 255, 0.4);
+  }
+  header.top nav { display: flex; gap: 22px; font-size: 13px; color: var(--fg-1); }
+  header.top nav a { color: var(--fg-1); text-decoration: none; transition: color .15s; }
+  header.top nav a:hover { color: var(--fg-0); }
+
+  .live-pill {
+    display: inline-flex; gap: 8px; align-items: center;
+    padding: 4px 12px; border-radius: 999px;
+    background: var(--bg-2); border: 1px solid var(--line-2);
+    font-family: var(--mono); font-size: 12px; color: var(--fg-1);
+    transition: all .25s;
+  }
+  .live-pill .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--fg-3);
+  }
+  .live-pill.connected {
+    border-color: rgba(105, 232, 150, 0.4);
+    background: rgba(105, 232, 150, 0.08);
+    color: var(--green);
+  }
+  .live-pill.connected .dot {
+    background: var(--green);
+    animation: pulse 1.6s infinite;
+  }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(105, 232, 150, 0.6); }
+    70%  { box-shadow: 0 0 0 8px rgba(105, 232, 150, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(105, 232, 150, 0); }
+  }
+
+  /* ============================================================
+     Main grid
+     ============================================================ */
+  main {
+    padding: 64px 0 96px;
+    display: grid;
+    grid-template-columns: 320px 1fr 320px;
+    gap: 40px;
+    align-items: start;
+  }
+  @media (max-width: 1100px) {
+    main { grid-template-columns: 1fr; gap: 32px; }
+  }
+
+  .lede { grid-column: 1 / -1; text-align: center; margin-bottom: 16px; }
+  .lede .eyebrow {
+    display: inline-block;
+    color: var(--accent); font-family: var(--mono); font-size: 11px;
+    letter-spacing: 0.22em; text-transform: uppercase; margin-bottom: 14px;
+  }
+  .lede h1 {
+    font-size: clamp(40px, 6vw, 70px);
+    font-weight: 600; letter-spacing: -0.025em; line-height: 1.05;
+    margin: 0;
+  }
+  .lede h1 .accent {
     background: var(--grad);
-    -webkit-background-clip: text;
-    background-clip: text;
+    -webkit-background-clip: text; background-clip: text;
     color: transparent;
   }
-  .lede { color: var(--fg-1); font-size: 17px; margin: 0 0 32px; max-width: 640px; }
-  .panel {
+  .lede p {
+    color: var(--fg-1); max-width: 640px; margin: 16px auto 0;
+    font-size: 16px;
+  }
+
+  /* ============================================================
+     The Eye Stage
+     ============================================================ */
+  .stage-wrap {
+    display: flex; justify-content: center;
+    grid-column: 2 / 3;
+  }
+  @media (max-width: 1100px) {
+    .stage-wrap { grid-column: 1 / -1; }
+  }
+
+  .eye-stage {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    padding: 36px 24px;
+    min-height: 320px;
+    position: relative;
+    transition: gap 0.6s cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  .eye-stage.compare { gap: 40px; }
+
+  /* Each eye-rig is a flesh-toned socket containing the spherical eye.
+     The "socket" is what the lids reveal when they close — so the lid
+     elements are NOT separate, they are simply the socket showing
+     through a clip-path on the eye element. */
+  .eye-rig {
+    width: var(--eye-w);
+    height: var(--eye-h);
+    position: relative;
+    transition: width 0.6s cubic-bezier(0.23, 1, 0.32, 1),
+                opacity 0.45s ease;
+    flex-shrink: 0;
+  }
+  .eye-rig.collapsed {
+    width: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* The flesh ring around the eye — the bezel that becomes visible when
+     the lid descends. A radial gradient gives it depth. */
+  .eye-socket {
+    position: absolute;
+    inset: -28px -36px;
+    border-radius: 50%;
+    background: radial-gradient(ellipse at 50% 50%,
+      var(--flesh-2) 0%,
+      var(--flesh-1) 60%,
+      var(--bg-1) 95%);
+    box-shadow:
+      inset 0 -10px 24px rgba(0, 0, 0, 0.6),
+      inset 0 14px 22px rgba(255, 255, 255, 0.04);
+    z-index: 1;
+  }
+
+  /* The eye itself — clipped by clip-path during a blink. The almond
+     shape comes from a border-radius trick: a bigger horizontal radius
+     than vertical produces the eye-shaped reveal. */
+  .eye {
+    position: absolute;
+    inset: 0;
+    border-radius: 50% / 50%;
+    overflow: hidden;
+    z-index: 2;
+    /* clip-path is animated by JS for the blink — these are the open values. */
+    clip-path: inset(0 0 0 0);
+    transition: clip-path 90ms ease-out;
+  }
+
+  .sclera {
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(ellipse at 50% 60%, var(--sclera) 0%, var(--sclera-shade) 100%);
+    transition: filter 0.4s ease, box-shadow 0.4s ease;
+  }
+  /* When the model is uncertain, the sclera reddens slightly — driven by
+     a CSS variable so JS can interpolate it smoothly. */
+  .sclera::after {
+    content: "";
+    position: absolute; inset: 0;
+    background: radial-gradient(ellipse at 50% 50%,
+      transparent 30%,
+      rgba(180, 30, 30, var(--uncertainty, 0)) 100%);
+    transition: background 0.5s ease;
+    pointer-events: none;
+  }
+
+  /* Conjunctival veins — branching SVG paths injected at init. */
+  .veins {
+    position: absolute; inset: 0;
+    pointer-events: none;
+    opacity: 0.4;
+    transition: opacity 0.5s ease;
+  }
+  .veins svg { width: 100%; height: 100%; display: block; }
+
+  /* ============================================================
+     The Iris — five layers + canvas heatmap + pupil + specular
+     ============================================================ */
+  .iris-wrap {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 44%;
+    aspect-ratio: 1 / 1;
+    transform: translate(-50%, -50%);
+    pointer-events: auto;
+    z-index: 3;
+    /* The micro-saccades apply translate to .iris-mover (a child) so the
+       wrap-level centering remains intact. */
+  }
+  .iris-mover {
+    position: absolute; inset: 0;
+    border-radius: 50%;
+    overflow: hidden;
+    box-shadow:
+      0 0 0 1px rgba(0, 0, 0, 0.5),
+      inset 0 0 12px rgba(0, 0, 0, 0.55);
+    transition: transform 200ms cubic-bezier(0.5, 0, 0.5, 1);
+    will-change: transform;
+  }
+
+  .iris-layer {
+    position: absolute; inset: 0;
+    border-radius: 50%;
+    pointer-events: none;
+  }
+
+  /* Layer 1 — the warm-to-dark base gradient, exactly per spec. */
+  .iris-base {
+    background: radial-gradient(circle at 50% 50%,
+      #3a1800 0%,
+      #7c3a00 30%,
+      #1a0a40 60%,
+      #000000 100%);
+  }
+
+  /* Layer 2 — radial fibers. The conic-gradient is built in JS with ~144
+     thin alternating sectors, blended onto the base. */
+  .iris-fibers {
+    mix-blend-mode: overlay;
+    opacity: 0.55;
+  }
+
+  /* Layer 3 — iris crypts. Sparser, higher-contrast spokes. */
+  .iris-crypts {
+    mix-blend-mode: multiply;
+    opacity: 0.45;
+  }
+
+  /* Layer 4 — collarette. A subtle ring at ~33% radius giving the iris
+     its characteristic two-zone structure (pupillary vs ciliary). */
+  .iris-collarette {
+    background: radial-gradient(circle at 50% 50%,
+      transparent 28%,
+      rgba(255, 220, 180, 0.18) 32%,
+      rgba(0, 0, 0, 0.28) 36%,
+      transparent 42%);
+    mix-blend-mode: overlay;
+  }
+
+  /* Layer 5 — limbal ring. Dark outer rim — a strong tell of healthy
+     real eyes, much imitated by tinted contact lenses. */
+  .iris-limbal {
+    background: radial-gradient(circle at 50% 50%,
+      transparent 88%,
+      rgba(0, 0, 0, 0.85) 100%);
+  }
+
+  /* Heatmap canvas — sits above iris layers, below pupil + specular.
+     Bloom animation is driven by a class swap, see .iris-heatmap.bloom. */
+  .iris-heatmap {
+    position: absolute; inset: 0;
+    border-radius: 50%;
+    opacity: 0;
+    transform: scale(0.3);
+    filter: blur(40px);
+    transition:
+      opacity 0.5s cubic-bezier(0.23, 1, 0.32, 1),
+      transform 0.6s cubic-bezier(0.23, 1, 0.32, 1),
+      filter 0.6s cubic-bezier(0.23, 1, 0.32, 1);
+    mix-blend-mode: screen;
+    pointer-events: none;
+  }
+  .iris-heatmap.bloom {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(8px);
+  }
+
+  /* Pupil — the size is animated in JS based on incoming brightness. */
+  .pupil {
+    position: absolute;
+    top: 50%; left: 50%;
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 40% 40%, #1a1a1a 0%, #000 75%);
+    transform: translate(-50%, -50%);
+    transition:
+      width 800ms cubic-bezier(0.23, 1, 0.32, 1),
+      height 800ms cubic-bezier(0.23, 1, 0.32, 1);
+    box-shadow: 0 0 6px rgba(0, 0, 0, 0.6);
+    will-change: width, height;
+  }
+
+  /* Specular highlight — small, off-center, blurred. */
+  .specular {
+    position: absolute;
+    top: 28%; left: 30%;
+    width: 22%; height: 16%;
+    background: radial-gradient(ellipse at 35% 30%,
+      rgba(255, 255, 255, 0.95) 0%,
+      rgba(255, 255, 255, 0.4) 35%,
+      rgba(255, 255, 255, 0) 70%);
+    filter: blur(2px);
+    opacity: 0.6;
+    border-radius: 50%;
+    pointer-events: none;
+  }
+  /* A second, much smaller catch-light makes the eye look damp. */
+  .specular-secondary {
+    position: absolute;
+    top: 56%; left: 60%;
+    width: 9%; height: 6%;
+    background: radial-gradient(ellipse,
+      rgba(255, 255, 255, 0.7) 0%,
+      rgba(255, 255, 255, 0) 80%);
+    filter: blur(1.5px);
+    opacity: 0.45;
+    border-radius: 50%;
+    pointer-events: none;
+  }
+
+  /* ============================================================
+     Side panels
+     ============================================================ */
+  aside.panel {
     background: var(--bg-1);
     border: 1px solid var(--line);
     border-radius: 14px;
-    padding: 24px;
-    margin-bottom: 24px;
-  }
-  .panel h2 {
-    margin: 0 0 16px;
-    font-size: 13px;
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-    color: var(--fg-2);
-    font-weight: 600;
-  }
-  .row { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end; }
-  .field { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 180px; }
-  .field label {
-    font-size: 12px;
-    color: var(--fg-2);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-  }
-  input[type=text], select {
-    background: var(--bg-2);
-    border: 1px solid var(--line-2);
-    color: var(--fg-0);
-    padding: 10px 12px;
-    border-radius: 8px;
-    font-family: var(--sans);
-    font-size: 14px;
+    padding: 22px;
     transition: border-color .15s;
   }
-  input[type=text]:focus, select:focus {
-    outline: none;
-    border-color: var(--accent);
-  }
-  button {
-    background: var(--grad);
-    color: #06070b;
-    border: none;
-    padding: 12px 20px;
-    border-radius: 8px;
-    font-family: var(--sans);
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    letter-spacing: 0.02em;
-    transition: transform .1s, box-shadow .15s;
-  }
-  button:hover { transform: translateY(-1px); box-shadow: 0 6px 24px rgba(176,140,255,0.25); }
-  button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
-  button.secondary {
-    background: var(--bg-2);
-    color: var(--fg-0);
-    border: 1px solid var(--line-2);
-  }
-  .samples { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-  .sample {
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    overflow: hidden;
-    cursor: pointer;
-    background: var(--bg-2);
-    transition: border-color .15s, transform .1s;
-    position: relative;
-  }
-  .sample:hover { border-color: var(--accent-2); }
-  .sample.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(122,215,255,0.25); }
-  .sample img { width: 100%; height: 140px; object-fit: cover; display: block; }
-  .sample .caption {
-    padding: 8px 10px;
-    font-size: 12px;
-    color: var(--fg-1);
-    border-top: 1px solid var(--line);
-  }
-  .results { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-  @media (max-width: 760px) { .results { grid-template-columns: 1fr; } }
-  .result-tile {
-    background: var(--bg-2);
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    overflow: hidden;
-  }
-  .result-tile h3 {
-    margin: 0;
-    padding: 10px 14px;
+  aside.panel h3 {
+    margin: 0 0 14px 0;
     font-size: 12px;
     text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: var(--fg-2);
-    border-bottom: 1px solid var(--line);
-    display: flex;
-    justify-content: space-between;
-  }
-  .canvas-wrap {
-    position: relative;
-    background: #000;
-    aspect-ratio: 1 / 1;
-  }
-  .canvas-wrap canvas, .canvas-wrap img {
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-    display: block;
-  }
-  .bbox-layer { position: absolute; inset: 0; pointer-events: none; }
-  .bbox-layer rect {
-    fill: rgba(122,215,255,0.10);
-    stroke: var(--accent);
-    stroke-width: 1.5;
-    vector-effect: non-scaling-stroke;
-  }
-  .bbox-layer text {
-    fill: var(--accent);
-    font-family: var(--mono);
-    font-size: 10px;
-    font-weight: 600;
-  }
-  .meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 14px;
-    font-size: 13px;
-    color: var(--fg-1);
-    font-family: var(--mono);
-    margin-top: 16px;
-    padding: 12px 14px;
-    background: var(--bg-2);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-  }
-  .meta strong { color: var(--fg-0); font-weight: 600; }
-  .meta .pill {
-    display: inline-flex;
-    padding: 2px 8px;
-    background: var(--bg-3);
-    border: 1px solid var(--line-2);
-    border-radius: 999px;
-    font-size: 11px;
-    align-items: center;
-    gap: 4px;
-  }
-  .pill.ok::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #69e896; }
-  .pill.fallback::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent-2); }
-  table.regions {
-    width: 100%;
-    border-collapse: collapse;
-    font-family: var(--mono);
-    font-size: 13px;
-  }
-  table.regions th, table.regions td {
-    text-align: left;
-    padding: 8px 10px;
-    border-bottom: 1px solid var(--line);
-  }
-  table.regions th {
+    letter-spacing: 0.16em;
     color: var(--fg-2);
     font-weight: 500;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
+    font-family: var(--mono);
   }
-  table.regions tr:last-child td { border-bottom: none; }
-  table.regions td.score { color: var(--accent); }
-  .score-bar {
-    display: inline-block;
-    height: 6px;
-    background: var(--grad);
-    border-radius: 3px;
-    vertical-align: middle;
-    margin-right: 8px;
-  }
-  .empty {
-    padding: 32px;
+  aside.panel + aside.panel { margin-top: 16px; }
+
+  .drop-zone {
+    border: 1.5px dashed var(--line-2);
+    border-radius: 12px;
+    padding: 24px 16px;
     text-align: center;
     color: var(--fg-2);
-    font-style: italic;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all .2s ease;
+    background: rgba(255, 255, 255, 0.01);
   }
-  .error {
-    background: rgba(255, 77, 109, 0.08);
-    border: 1px solid var(--warn);
-    color: #ffb0bd;
-    padding: 12px 14px;
+  .drop-zone:hover, .drop-zone.over {
+    border-color: var(--accent-2);
+    background: rgba(176, 140, 255, 0.05);
+    color: var(--fg-0);
+  }
+  .drop-zone .icon {
+    font-size: 24px; margin-bottom: 8px;
+  }
+
+  .samples {
+    margin-top: 14px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .sample-chip {
+    background: var(--bg-2);
+    border: 1px solid var(--line);
     border-radius: 8px;
+    padding: 10px 8px;
+    font-size: 12px;
+    color: var(--fg-1);
+    cursor: pointer;
+    transition: all .15s;
     font-family: var(--mono);
-    font-size: 13px;
   }
-  code { font-family: var(--mono); color: var(--accent); }
-  footer {
-    margin-top: 48px;
-    padding-top: 24px;
-    border-top: 1px solid var(--line);
+  .sample-chip:hover {
+    border-color: var(--line-2);
+    color: var(--fg-0);
+    background: var(--bg-0);
+  }
+  .sample-chip.active {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: rgba(122, 215, 255, 0.06);
+  }
+
+  textarea.prompt {
+    margin-top: 14px;
+    width: 100%;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 12px;
+    color: var(--fg-0);
+    font-family: var(--sans);
+    font-size: 13px;
+    line-height: 1.4;
+    resize: vertical;
+    min-height: 60px;
+    transition: border-color .15s;
+  }
+  textarea.prompt:focus { outline: none; border-color: var(--accent); }
+
+  .actions {
+    margin-top: 14px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .btn {
+    padding: 10px 16px;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    font-size: 13px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: all .15s ease;
+    font-family: var(--sans);
+  }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn.primary {
+    background: var(--grad);
+    color: var(--bg-0);
+    box-shadow: 0 6px 22px -10px rgba(176, 140, 255, 0.6);
+  }
+  .btn.primary:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 12px 30px -10px rgba(176, 140, 255, 0.7);
+  }
+  .btn.ghost {
+    background: var(--bg-2);
+    border-color: var(--line-2);
+    color: var(--fg-0);
+  }
+  .btn.ghost:hover:not(:disabled) { background: var(--bg-1); }
+  .btn.toggle.active {
+    background: rgba(255, 138, 211, 0.12);
+    border-color: rgba(255, 138, 211, 0.45);
+    color: var(--accent-3);
+  }
+
+  /* ============================================================
+     Telemetry
+     ============================================================ */
+  .telem {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .telem .row {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    align-items: center;
+    padding: 9px 0;
+    border-bottom: 1px dashed var(--line);
+  }
+  .telem .row:last-child { border-bottom: none; }
+  .telem .key { color: var(--fg-2); }
+  .telem .val { color: var(--fg-0); text-align: right; }
+  .telem .val.accent { color: var(--accent); }
+  .telem .val.warm   { color: var(--warm); }
+  .telem .val.green  { color: var(--green); }
+  .telem .val.hot    { color: var(--hot); }
+
+  .answer-card {
+    margin-top: 14px;
+    padding: 14px;
+    border-radius: 10px;
+    background: linear-gradient(180deg,
+      rgba(176, 140, 255, 0.08),
+      rgba(122, 215, 255, 0.04));
+    border: 1px solid rgba(176, 140, 255, 0.25);
+    font-size: 13px;
+    line-height: 1.55;
+    transition: border-color .3s ease, background .3s ease;
+  }
+  .answer-card.live { border-color: rgba(105, 232, 150, 0.45); }
+  .answer-card .lbl {
+    font-family: var(--mono);
+    font-size: 10px;
     color: var(--fg-2);
-    font-size: 13px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    margin-bottom: 6px;
   }
+  .answer-card .text {
+    color: var(--fg-0);
+    font-weight: 500;
+    font-size: 14px;
+  }
+  .answer-card .meta {
+    display: flex; gap: 12px; flex-wrap: wrap;
+    margin-top: 8px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--fg-2);
+  }
+  .answer-card .meta b { color: var(--fg-0); font-weight: 500; }
+
+  .preview {
+    margin-top: 14px;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    overflow: hidden;
+    background: var(--bg-0);
+    display: none;
+  }
+  .preview.visible { display: block; }
+  .preview canvas { width: 100%; height: 100%; display: block; }
+
+  /* ============================================================
+     Confidence bar
+     ============================================================ */
+  .conf-wrap {
+    height: 4px; width: 100%;
+    background: var(--bg-2);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 4px;
+  }
+  .conf-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--grad);
+    transition: width 600ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  .conf-fill.low {
+    background: linear-gradient(90deg, var(--hot), var(--warm));
+  }
+
+  /* Footer */
+  footer {
+    border-top: 1px solid var(--line);
+    padding: 32px 0 48px;
+    margin-top: 32px;
+    color: var(--fg-2);
+    font-size: 12px;
+    font-family: var(--mono);
+  }
+  footer .row { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 </style>
 </head>
 <body>
-<main>
-  <h1>Visual Explainability</h1>
-  <p class="lede">
-    See exactly where Miru is looking. Compare attention maps to Grad-CAM and find the
-    top-attended regions for any image. The heatmap is what the model thinks matters; the
-    boxes are the highest-scoring grid cells.
-  </p>
 
-  <section class="panel">
-    <h2>1 — Pick an image</h2>
-    <div class="samples" id="samples"></div>
-    <div class="row" style="margin-top: 16px">
-      <div class="field" style="flex: 2">
-        <label>or upload your own</label>
-        <input type="file" id="file" accept="image/*" />
+<!-- ==================== HEADER ==================== -->
+<header class="top">
+  <div class="container row">
+    <div class="brand">
+      <div class="glyph"></div>
+      Miru — The Eye
+    </div>
+    <nav>
+      <a href="index.html">← page</a>
+      <a href="https://github.com/konjoai/miru" target="_blank" rel="noopener">github</a>
+    </nav>
+    <div class="live-pill" id="live-pill">
+      <span class="dot"></span>
+      <span id="live-text">checking server…</span>
+    </div>
+  </div>
+</header>
+
+<!-- ==================== MAIN ==================== -->
+<div class="container">
+  <main>
+
+    <div class="lede">
+      <div class="eyebrow">// vision · reasoning · trace</div>
+      <h1>The eye <span class="accent">that sees</span><br/>what you give it.</h1>
+      <p>A photorealistic eye wired to a real Miru server. Drop an image — the iris dilates by its brightness, the heatmap blooms onto the focus map returned from <code>/api/analyze</code>, and the sclera reddens when the model is unsure. Compare mode splits the eye in two so you can A/B different prompts side by side.</p>
+    </div>
+
+    <!-- ===== LEFT PANEL — input ===== -->
+    <aside class="panel">
+      <h3>Image</h3>
+      <div class="drop-zone" id="drop-zone">
+        <div class="icon">⤓</div>
+        <div>drop an image here<br/><span style="opacity:.6">or pick a sample below</span></div>
+      </div>
+      <div class="samples" id="samples">
+        <button class="sample-chip" data-sample="bright">bright</button>
+        <button class="sample-chip" data-sample="dim">dim</button>
+        <button class="sample-chip" data-sample="dark">dark</button>
+        <button class="sample-chip" data-sample="chart">chart</button>
+      </div>
+      <textarea class="prompt" id="prompt-1" rows="2">What is the dominant subject of this image?</textarea>
+      <div class="actions">
+        <button class="btn primary" id="btn-see">See</button>
+        <button class="btn ghost" id="btn-blink">Blink</button>
+        <button class="btn ghost toggle" id="btn-compare">Compare</button>
+      </div>
+
+      <div class="preview" id="preview">
+        <canvas id="preview-canvas" width="256" height="256"></canvas>
+      </div>
+    </aside>
+
+    <!-- ===== CENTER — the eye(s) ===== -->
+    <div class="stage-wrap">
+      <div class="eye-stage" id="stage">
+        <!-- Eye 1 — built by JS, see #eye-template -->
       </div>
     </div>
-  </section>
 
-  <section class="panel">
-    <h2>2 — Configure</h2>
-    <div class="row">
-      <div class="field">
-        <label>Method</label>
-        <select id="method">
-          <option value="attention">Attention (raw VLM)</option>
-          <option value="gradcam">Grad-CAM</option>
-        </select>
+    <!-- ===== RIGHT PANEL — output ===== -->
+    <aside class="panel">
+      <h3>Live telemetry</h3>
+      <div class="telem" id="telem">
+        <div class="row"><div class="key">brightness</div><div class="val" data-k="brightness">—</div></div>
+        <div class="row"><div class="key">pupil ⌀</div><div class="val accent" data-k="pupil">22 px</div></div>
+        <div class="row"><div class="key">saccades</div><div class="val" data-k="saccades">0</div></div>
+        <div class="row"><div class="key">blinks</div><div class="val" data-k="blinks">0</div></div>
+        <div class="row"><div class="key">confidence</div>
+          <div class="val green" data-k="confidence">—
+            <div class="conf-wrap"><div class="conf-fill" id="conf-fill"></div></div>
+          </div>
+        </div>
+        <div class="row"><div class="key">latency</div><div class="val warm" data-k="latency">—</div></div>
+        <div class="row"><div class="key">backend</div><div class="val accent" data-k="backend">—</div></div>
+        <div class="row"><div class="key">mode</div><div class="val" data-k="mode">single eye</div></div>
       </div>
-      <div class="field">
-        <label>Backend</label>
-        <select id="backend">
-          <option value="mock">mock (deterministic)</option>
-          <option value="clip">clip (if available)</option>
-        </select>
-      </div>
-      <div class="field" style="flex: 2">
-        <label>Question</label>
-        <input id="question" type="text" value="What is the most salient object?" />
-      </div>
-      <div class="field" style="flex: 0 0 auto">
-        <label style="visibility: hidden">go</label>
-        <button id="run" type="button">Explain</button>
-      </div>
-    </div>
-  </section>
 
-  <section class="panel" id="result-panel" style="display: none">
-    <h2>3 — Result</h2>
-    <div id="error-slot"></div>
-    <div class="results">
-      <div class="result-tile">
-        <h3><span>Original</span><span id="dim-label">—</span></h3>
-        <div class="canvas-wrap">
-          <img id="original-img" alt="original" />
-          <svg class="bbox-layer" id="bbox-svg" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
+      <div class="answer-card" id="answer-card" style="display:none">
+        <div class="lbl">answer</div>
+        <div class="text" id="answer-text">—</div>
+        <div class="meta" id="answer-meta"></div>
+      </div>
+    </aside>
+
+  </main>
+</div>
+
+<footer class="container">
+  <div class="row">
+    <div>Miru — visual demo · ቆንጆ · 根性 · 康宙 · কুঞ্জ</div>
+    <div>BUSL-1.1 · drop an image, or just watch it blink</div>
+  </div>
+</footer>
+
+<!-- ==================== EYE TEMPLATE ==================== -->
+<template id="eye-template">
+  <div class="eye-rig">
+    <div class="eye-socket"></div>
+    <div class="eye">
+      <div class="sclera"></div>
+      <div class="veins"></div>
+      <div class="iris-wrap">
+        <div class="iris-mover">
+          <div class="iris-layer iris-base"></div>
+          <div class="iris-layer iris-fibers"></div>
+          <div class="iris-layer iris-crypts"></div>
+          <div class="iris-layer iris-collarette"></div>
+          <canvas class="iris-heatmap" width="220" height="220"></canvas>
+          <div class="pupil"></div>
+          <div class="specular"></div>
+          <div class="specular-secondary"></div>
+          <div class="iris-layer iris-limbal"></div>
         </div>
       </div>
-      <div class="result-tile">
-        <h3><span>Heatmap overlay</span><span id="grid-label">—</span></h3>
-        <div class="canvas-wrap">
-          <img id="overlay-img" alt="overlay" />
-        </div>
-      </div>
     </div>
-    <div class="meta" id="meta"></div>
-    <h3 style="margin: 24px 0 12px; font-size: 14px; color: var(--fg-1)">Top-5 attended regions</h3>
-    <table class="regions">
-      <thead>
-        <tr><th>#</th><th>row, col</th><th>bbox (x1, y1, x2, y2)</th><th>score</th></tr>
-      </thead>
-      <tbody id="regions-tbody"></tbody>
-    </table>
-  </section>
-
-  <footer>
-    Posts to <code>POST /explain</code> on this origin. Run the dev server with
-    <code>uvicorn miru.main:app --reload</code> on port 8000 — or change the
-    <code>API_BASE</code> at the top of this file.
-  </footer>
-</main>
+  </div>
+</template>
 
 <script>
-  const API_BASE = "";  // same-origin by default; set to "http://127.0.0.1:8000" if serving the demo elsewhere
+"use strict";
 
-  const SAMPLES = [
-    { name: "Single blob", file: "sample_images/blob.png" },
-    { name: "Two blobs", file: "sample_images/two_blobs.png" },
-    { name: "Gradient + checker", file: "sample_images/gradient.png" },
+/* ============================================================
+   Configuration
+   ============================================================ */
+const CONFIG = {
+  apiBase: "",            // same-origin; demo/server.py answers /api/*
+  saccadeMin: 3000,       // ms
+  saccadeMax: 5500,
+  saccadeRange: 3,        // px — translate magnitude
+  blinkMin: 4200,
+  blinkMax: 6800,
+  pupilMin: 12,           // px — fully bright
+  pupilMax: 36,           // px — fully dark
+  pupilDefault: 22,
+  attnGridSize: 16,
+};
+
+/* ============================================================
+   Programmatic iris layers — generated once at init so each eye
+   has a unique fibre/crypt pattern (no two real irises match).
+   ============================================================ */
+
+function rand(seed) {
+  // Mulberry32 — small deterministic PRNG so each eye is reproducible.
+  let s = seed >>> 0;
+  return function () {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function buildIrisFibers(seed) {
+  // 144 sectors at 2.5° each, alternating warm-light and cool-dark.
+  const r = rand(seed);
+  const N = 144;
+  const stops = [];
+  for (let i = 0; i < N; i++) {
+    const deg0 = (i / N) * 360;
+    const deg1 = ((i + 1) / N) * 360;
+    const isLight = i % 2 === 0;
+    const a = isLight
+      ? 0.10 + r() * 0.10
+      : 0.12 + r() * 0.12;
+    const c = isLight
+      ? `rgba(255, 220, 180, ${a.toFixed(3)})`
+      : `rgba(40, 20, 0, ${a.toFixed(3)})`;
+    stops.push(`${c} ${deg0.toFixed(2)}deg ${deg1.toFixed(2)}deg`);
+  }
+  return `conic-gradient(from 0deg at 50% 50%, ${stops.join(", ")})`;
+}
+
+function buildIrisCrypts(seed) {
+  // Sparser, higher-contrast spokes — only a fraction of sectors are
+  // visible, the rest are transparent.
+  const r = rand(seed + 9001);
+  const N = 220;
+  const stops = [];
+  for (let i = 0; i < N; i++) {
+    const deg0 = (i / N) * 360;
+    const deg1 = ((i + 1) / N) * 360;
+    const visible = r() < 0.35;
+    const a = visible ? 0.10 + r() * 0.30 : 0;
+    const dark = r() < 0.7;
+    const c = visible
+      ? (dark ? `rgba(0, 0, 0, ${a.toFixed(3)})`
+              : `rgba(255, 200, 130, ${(a * 0.7).toFixed(3)})`)
+      : "rgba(0, 0, 0, 0)";
+    stops.push(`${c} ${deg0.toFixed(2)}deg ${deg1.toFixed(2)}deg`);
+  }
+  return `conic-gradient(from 0deg at 50% 50%, ${stops.join(", ")})`;
+}
+
+/* ============================================================
+   Sclera vein generation — branching SVG paths.
+   ============================================================ */
+
+function buildVeinsSVG(seed) {
+  const r = rand(seed + 13);
+  const W = 100, H = 60;
+  // Start positions along the left + right edges of the sclera (where
+  // the conjunctiva meets the limbus). Each vein walks inward, tapers,
+  // and possibly branches once.
+  const sides = [
+    { sx: 1,  sy: 30, dir:  1 },
+    { sx: 1,  sy: 18, dir:  1 },
+    { sx: 99, sy: 38, dir: -1 },
+    { sx: 99, sy: 50, dir: -1 },
+    { sx: 99, sy: 16, dir: -1 },
   ];
+  let paths = "";
+  for (const s of sides) {
+    paths += renderVein(s.sx, s.sy, s.dir, r, 5);
+    if (r() < 0.55) paths += renderVein(s.sx, s.sy + (r() * 6 - 3), s.dir, r, 3);
+  }
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${paths}</svg>`;
+}
 
-  let selectedImageB64 = null;
-  let selectedImageDataURL = null;
+function renderVein(x0, y0, dir, r, depth) {
+  if (depth <= 0) return "";
+  const length = 22 + r() * 14;
+  const x1 = x0 + dir * length;
+  const y1 = y0 + (r() - 0.5) * 8;
+  // Quadratic curve — control point off the midpoint for an organic kink.
+  const cx = (x0 + x1) / 2 + (r() - 0.5) * 12;
+  const cy = (y0 + y1) / 2 + (r() - 0.5) * 6;
+  const w = 0.55 - (5 - depth) * 0.08;
+  const main = `<path d="M ${x0.toFixed(2)} ${y0.toFixed(2)} Q ${cx.toFixed(2)} ${cy.toFixed(2)} ${x1.toFixed(2)} ${y1.toFixed(2)}" stroke="#b62a3a" stroke-width="${w.toFixed(3)}" fill="none" stroke-linecap="round" />`;
+  let branch = "";
+  if (r() < 0.45 && depth > 1) {
+    const bx = (x0 + x1) / 2;
+    const by = (y0 + y1) / 2;
+    branch = renderVein(bx, by, dir, r, depth - 2);
+  }
+  return main + branch;
+}
 
-  // ----------------------------------------------------------------
-  // Sample picker
-  // ----------------------------------------------------------------
-  const samplesEl = document.getElementById("samples");
-  SAMPLES.forEach((s, i) => {
-    const card = document.createElement("div");
-    card.className = "sample" + (i === 0 ? " selected" : "");
-    card.dataset.idx = String(i);
-    card.innerHTML = `<img src="${s.file}" alt="${s.name}"><div class="caption">${s.name}</div>`;
-    card.onclick = () => selectSample(i);
-    samplesEl.appendChild(card);
-  });
+/* ============================================================
+   The Eye class — owns one eye-rig and all its behaviours.
+   ============================================================ */
 
-  async function selectSample(idx) {
-    document.querySelectorAll(".sample").forEach((c, i) => c.classList.toggle("selected", i === idx));
-    const file = SAMPLES[idx].file;
-    const resp = await fetch(file);
-    const blob = await resp.blob();
-    await loadImageBlob(blob);
+class Eye {
+  constructor(seed = 1) {
+    this.seed = seed;
+    const tpl = document.getElementById("eye-template");
+    this.root = tpl.content.firstElementChild.cloneNode(true);
+    this.eye = this.root.querySelector(".eye");
+    this.sclera = this.root.querySelector(".sclera");
+    this.veins = this.root.querySelector(".veins");
+    this.irisMover = this.root.querySelector(".iris-mover");
+    this.fibers = this.root.querySelector(".iris-fibers");
+    this.crypts = this.root.querySelector(".iris-crypts");
+    this.heatmap = this.root.querySelector(".iris-heatmap");
+    this.pupil = this.root.querySelector(".pupil");
+
+    // Apply the generated layers — each eye unique by seed.
+    this.fibers.style.background = buildIrisFibers(seed);
+    this.crypts.style.background = buildIrisCrypts(seed);
+    this.veins.innerHTML = buildVeinsSVG(seed);
+
+    this.pupilSize = CONFIG.pupilDefault;
+    this._setPupil(this.pupilSize);
+
+    this.saccades = 0;
+    this.blinks = 0;
+    this.confidence = null;
+    this.uncertainty = 0;
+
+    // schedule life
+    this._timers = [];
+    this._scheduleSaccade();
+    this._scheduleBlink();
   }
 
-  document.getElementById("file").addEventListener("change", async (ev) => {
-    const file = ev.target.files[0];
-    if (!file) return;
-    document.querySelectorAll(".sample").forEach((c) => c.classList.remove("selected"));
-    await loadImageBlob(file);
-  });
+  /* ----- lifecycle scheduling ------------------------------------ */
 
-  // ----------------------------------------------------------------
-  // Image loading: produce both an `image_b64` payload (raw RGB bytes
-  // base64-encoded — what `_decode_image` in the API expects) and a
-  // dataURL for display.
-  // ----------------------------------------------------------------
-  async function loadImageBlob(blob) {
-    const dataURL = await new Promise((resolve, reject) => {
-      const r = new FileReader();
-      r.onload = () => resolve(r.result);
-      r.onerror = () => reject(r.error);
-      r.readAsDataURL(blob);
-    });
-    selectedImageDataURL = dataURL;
-
-    // Decode to RGB bytes via canvas, then base64-encode for the API.
-    const img = new Image();
-    img.src = dataURL;
-    await img.decode();
-    const SIDE = 64;  // small square — keeps payload tiny
-    const canvas = document.createElement("canvas");
-    canvas.width = canvas.height = SIDE;
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(img, 0, 0, SIDE, SIDE);
-    const rgba = ctx.getImageData(0, 0, SIDE, SIDE).data;
-    const rgb = new Uint8Array(SIDE * SIDE * 3);
-    for (let i = 0, j = 0; i < rgba.length; i += 4, j += 3) {
-      rgb[j] = rgba[i];
-      rgb[j + 1] = rgba[i + 1];
-      rgb[j + 2] = rgba[i + 2];
-    }
-    selectedImageB64 = bytesToB64(rgb);
+  _scheduleSaccade() {
+    const t = CONFIG.saccadeMin + Math.random() * (CONFIG.saccadeMax - CONFIG.saccadeMin);
+    const id = setTimeout(() => this._saccade(), t);
+    this._timers.push(id);
   }
 
-  function bytesToB64(bytes) {
-    let bin = "";
-    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-    return btoa(bin);
+  _scheduleBlink() {
+    const t = CONFIG.blinkMin + Math.random() * (CONFIG.blinkMax - CONFIG.blinkMin);
+    const id = setTimeout(() => this.blink(), t);
+    this._timers.push(id);
   }
 
-  // Initial sample selection.
-  selectSample(0);
-
-  // ----------------------------------------------------------------
-  // Run /explain
-  // ----------------------------------------------------------------
-  document.getElementById("run").addEventListener("click", runExplain);
-
-  async function runExplain() {
-    const errSlot = document.getElementById("error-slot");
-    errSlot.innerHTML = "";
-    if (!selectedImageB64) {
-      errSlot.innerHTML = `<div class="error">Pick or upload an image first.</div>`;
-      return;
-    }
-
-    const payload = {
-      image_b64: selectedImageB64,
-      question: document.getElementById("question").value,
-      method: document.getElementById("method").value,
-      backend: document.getElementById("backend").value,
-      top_k: 5,
-    };
-
-    const btn = document.getElementById("run");
-    btn.disabled = true;
-    btn.textContent = "Explaining…";
-    try {
-      const resp = await fetch(`${API_BASE}/explain?overlay=true`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (resp.status === 501) {
-        const body = await resp.json();
-        errSlot.innerHTML = `<div class="error">${body.detail || "Method on roadmap"}</div>`;
-        return;
-      }
-      if (!resp.ok) {
-        const text = await resp.text();
-        errSlot.innerHTML = `<div class="error">HTTP ${resp.status}: ${escapeHtml(text)}</div>`;
-        return;
-      }
-      const data = await resp.json();
-      renderResult(data);
-    } catch (err) {
-      errSlot.innerHTML = `<div class="error">Network error — is the API running on ${API_BASE || "this origin"}? (${err.message})</div>`;
-    } finally {
-      btn.disabled = false;
-      btn.textContent = "Explain";
-    }
+  _saccade() {
+    const dx = (Math.random() - 0.5) * 2 * CONFIG.saccadeRange;
+    const dy = (Math.random() - 0.5) * 2 * CONFIG.saccadeRange;
+    this.irisMover.style.transition = "transform 80ms ease-in";
+    this.irisMover.style.transform = `translate(${dx.toFixed(2)}px, ${dy.toFixed(2)}px)`;
+    setTimeout(() => {
+      this.irisMover.style.transition = "transform 200ms cubic-bezier(0.5, 0, 0.5, 1)";
+      this.irisMover.style.transform = "translate(0, 0)";
+    }, 90);
+    this.saccades++;
+    this._scheduleSaccade();
+    if (this.onTelemetry) this.onTelemetry();
   }
 
-  // ----------------------------------------------------------------
-  // Rendering
-  // ----------------------------------------------------------------
-  function renderResult(data) {
-    document.getElementById("result-panel").style.display = "";
-    document.getElementById("original-img").src = selectedImageDataURL;
-    if (data.overlay_b64) {
-      document.getElementById("overlay-img").src = "data:image/png;base64," + data.overlay_b64;
-    } else {
-      // No overlay returned (Pillow missing or backend mismatch) — render the raw heatmap.
-      document.getElementById("overlay-img").src = renderHeatmapToDataURL(data.heatmap);
-    }
-    document.getElementById("dim-label").textContent = `${data.width}×${data.height} grid`;
-    document.getElementById("grid-label").textContent = `${data.method} · ${data.backend}`;
-
-    // Bounding boxes on the original image.
-    const svg = document.getElementById("bbox-svg");
-    svg.innerHTML = "";
-    data.top_regions.forEach((r, i) => {
-      const x = r.bbox_x1 * 100;
-      const y = r.bbox_y1 * 100;
-      const w = (r.bbox_x2 - r.bbox_x1) * 100;
-      const h = (r.bbox_y2 - r.bbox_y1) * 100;
-      svg.insertAdjacentHTML(
-        "beforeend",
-        `<rect x="${x}" y="${y}" width="${w}" height="${h}"/>` +
-        `<text x="${x + 0.5}" y="${y + 4}">${i + 1}</text>`,
-      );
-    });
-
-    // Meta strip.
-    const fallback = data.used_fallback
-      ? `<span class="pill fallback">attention fallback</span>`
-      : `<span class="pill ok">native</span>`;
-    document.getElementById("meta").innerHTML = `
-      <span><strong>method</strong> ${data.method} (${data.status})</span>
-      <span><strong>backend</strong> ${data.backend}</span>
-      <span><strong>answer</strong> ${escapeHtml(data.answer)}</span>
-      <span><strong>latency</strong> ${data.latency_ms.toFixed(2)} ms</span>
-      ${fallback}
-    `;
-
-    // Top-regions table.
-    const tbody = document.getElementById("regions-tbody");
-    tbody.innerHTML = "";
-    data.top_regions.forEach((r, i) => {
-      const barWidth = Math.max(2, Math.round(r.score * 80));
-      tbody.insertAdjacentHTML(
-        "beforeend",
-        `<tr>
-          <td>${i + 1}</td>
-          <td>(${r.row}, ${r.col})</td>
-          <td>(${r.bbox_x1.toFixed(3)}, ${r.bbox_y1.toFixed(3)}, ${r.bbox_x2.toFixed(3)}, ${r.bbox_y2.toFixed(3)})</td>
-          <td class="score"><span class="score-bar" style="width:${barWidth}px"></span>${r.score.toFixed(3)}</td>
-        </tr>`,
-      );
-    });
+  blink() {
+    // The blink keyframe is constructed inline so we can control timing
+    // per-blink. Single clip-path with asymmetric upper/lower travel:
+    // upper goes 0→50% in 35% of duration (fast), lower goes 0→50% in
+    // 45% of duration (slower). Reverse on the way out.
+    const total = 280;
+    const animation = this.eye.animate(
+      [
+        { clipPath: "inset(0% 0 0% 0)",   offset: 0.00 },
+        { clipPath: "inset(45% 0 30% 0)", offset: 0.35 },
+        { clipPath: "inset(50% 0 50% 0)", offset: 0.50 },
+        { clipPath: "inset(45% 0 30% 0)", offset: 0.65 },
+        { clipPath: "inset(0% 0 0% 0)",   offset: 1.00 },
+      ],
+      { duration: total, easing: "cubic-bezier(0.4, 0, 0.6, 1)" }
+    );
+    this.blinks++;
+    this._scheduleBlink();
+    if (this.onTelemetry) this.onTelemetry();
+    return animation.finished;
   }
 
-  function renderHeatmapToDataURL(grid) {
-    const h = grid.length, w = grid[0].length;
-    const c = document.createElement("canvas");
-    c.width = w; c.height = h;
-    const ctx = c.getContext("2d");
-    const img = ctx.createImageData(w, h);
-    for (let r = 0; r < h; r++) {
-      for (let cc = 0; cc < w; cc++) {
-        const t = grid[r][cc];
-        const [R, G, B] = jet(t);
-        const idx = (r * w + cc) * 4;
-        img.data[idx] = R; img.data[idx + 1] = G; img.data[idx + 2] = B; img.data[idx + 3] = 255;
+  /* ----- pupil dilation ------------------------------------------ */
+
+  setPupilFromBrightness(brightness) {
+    // brightness ∈ [0, 1] — bright = small pupil.
+    const b = Math.max(0, Math.min(1, brightness));
+    const size = CONFIG.pupilMax - (CONFIG.pupilMax - CONFIG.pupilMin) * b;
+    this.pupilSize = size;
+    this._setPupil(size);
+  }
+
+  _setPupil(px) {
+    this.pupil.style.width = px.toFixed(1) + "px";
+    this.pupil.style.height = px.toFixed(1) + "px";
+  }
+
+  /* ----- heatmap fluid bloom ------------------------------------- */
+
+  renderHeatmap(grid, focal = null) {
+    const ctx = this.heatmap.getContext("2d");
+    const W = this.heatmap.width, H = this.heatmap.height;
+    const Gh = grid.length, Gw = grid[0].length;
+    let maxV = 0;
+    for (const row of grid) for (const v of row) if (v > maxV) maxV = v;
+    if (maxV <= 0) maxV = 1;
+
+    const img = ctx.createImageData(W, H);
+    const cx = W / 2, cy = H / 2, R = W / 2;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const dx = x - cx, dy = y - cy;
+        const inside = (dx * dx + dy * dy) <= R * R;
+        const i = (y * W + x) * 4;
+        if (!inside) { img.data[i + 3] = 0; continue; }
+        // Bilinear sample of the attention grid, then map to a hot palette.
+        const fx = (x / W) * (Gw - 1);
+        const fy = (y / H) * (Gh - 1);
+        const x0 = Math.floor(fx), x1 = Math.min(Gw - 1, x0 + 1);
+        const y0 = Math.floor(fy), y1 = Math.min(Gh - 1, y0 + 1);
+        const tx = fx - x0, ty = fy - y0;
+        const v00 = grid[y0][x0], v01 = grid[y0][x1];
+        const v10 = grid[y1][x0], v11 = grid[y1][x1];
+        const top = v00 * (1 - tx) + v01 * tx;
+        const bot = v10 * (1 - tx) + v11 * tx;
+        const w = (top * (1 - ty) + bot * ty) / maxV;
+
+        // Glowing hot palette: dark purple → magenta → orange → yellow-white.
+        const r = clamp255(40 + w * 240);
+        const g = clamp255(20 + w * w * 200);
+        const b = clamp255(180 - w * 160 + (1 - w) * 60);
+        img.data[i]     = r;
+        img.data[i + 1] = g;
+        img.data[i + 2] = b;
+        img.data[i + 3] = clamp255(w * 230);
       }
     }
     ctx.putImageData(img, 0, 0);
-    return c.toDataURL("image/png");
+
+    // Set the bloom origin so the heatmap visually expands from the
+    // focal point of attention.
+    if (focal) {
+      const ox = (focal.col / Gw) * 100;
+      const oy = (focal.row / Gh) * 100;
+      this.heatmap.style.transformOrigin = `${ox}% ${oy}%`;
+    } else {
+      this.heatmap.style.transformOrigin = "50% 50%";
+    }
+    // Restart the bloom animation by removing + re-adding the class.
+    this.heatmap.classList.remove("bloom");
+    void this.heatmap.offsetWidth;   // force reflow
+    requestAnimationFrame(() => this.heatmap.classList.add("bloom"));
   }
 
-  function jet(t) {
-    t = Math.max(0, Math.min(1, t));
-    let R = 0, G = 0, B = 0;
-    if (t <= 0.125) { R = 0; G = 0; B = 128 + 127 * (t / 0.125); }
-    else if (t <= 0.375) { R = 0; G = 255 * ((t - 0.125) / 0.25); B = 255; }
-    else if (t <= 0.625) { const s = (t - 0.375) / 0.25; R = 255 * s; G = 255; B = 255 * (1 - s); }
-    else if (t <= 0.875) { R = 255; G = 255 * (1 - (t - 0.625) / 0.25); B = 0; }
-    else { R = 255 * (1 - 0.5 * (t - 0.875) / 0.125); G = 0; B = 0; }
-    return [Math.round(R), Math.round(G), Math.round(B)];
+  clearHeatmap() {
+    this.heatmap.classList.remove("bloom");
+    const ctx = this.heatmap.getContext("2d");
+    ctx.clearRect(0, 0, this.heatmap.width, this.heatmap.height);
   }
 
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+  /* ----- confidence → sclera redness ----------------------------- */
+
+  setConfidence(confidence) {
+    this.confidence = confidence;
+    // Map confidence ∈ [0, 1] to uncertainty redness ∈ [0.18, 0]
+    // (low confidence ⇒ visible red, high ⇒ none).
+    const c = Math.max(0, Math.min(1, confidence));
+    this.uncertainty = 0.18 * (1 - c);
+    this.sclera.style.setProperty("--uncertainty", this.uncertainty.toFixed(3));
+    // Slightly intensify veins under uncertainty too.
+    this.veins.style.opacity = (0.4 + 0.4 * (1 - c)).toFixed(3);
   }
+
+  /* ----- destructor ---------------------------------------------- */
+
+  dispose() {
+    for (const id of this._timers) clearTimeout(id);
+    this._timers = [];
+  }
+}
+
+function clamp255(v) { return Math.max(0, Math.min(255, Math.round(v))); }
+
+/* ============================================================
+   Sample painters — procedural images for users without their own.
+   ============================================================ */
+
+function paintSample(canvas, kind) {
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  if (kind === "bright") {
+    // sunny sky/landscape
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, "#ffd66e");
+    g.addColorStop(0.45, "#ffb14a");
+    g.addColorStop(0.9, "#3a7e3a");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+    // Bright sun
+    const sunR = W * 0.18;
+    const sun = ctx.createRadialGradient(W * 0.7, H * 0.25, 0, W * 0.7, H * 0.25, sunR);
+    sun.addColorStop(0, "rgba(255,255,200,0.95)");
+    sun.addColorStop(1, "rgba(255,255,200,0)");
+    ctx.fillStyle = sun;
+    ctx.beginPath(); ctx.arc(W * 0.7, H * 0.25, sunR, 0, Math.PI * 2); ctx.fill();
+  } else if (kind === "dim") {
+    // overcast indoor
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, "#586079");
+    g.addColorStop(1, "#2a2f3e");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+    // soft window of light
+    const win = ctx.createRadialGradient(W * 0.3, H * 0.4, 0, W * 0.3, H * 0.4, W * 0.5);
+    win.addColorStop(0, "rgba(220,210,180,0.55)");
+    win.addColorStop(1, "rgba(220,210,180,0)");
+    ctx.fillStyle = win;
+    ctx.fillRect(0, 0, W, H);
+  } else if (kind === "dark") {
+    // night
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, "#0a0c1a");
+    g.addColorStop(1, "#1a1424");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+    // a single distant light
+    const lit = ctx.createRadialGradient(W * 0.42, H * 0.5, 0, W * 0.42, H * 0.5, W * 0.18);
+    lit.addColorStop(0, "rgba(255,200,140,0.65)");
+    lit.addColorStop(1, "rgba(255,200,140,0)");
+    ctx.fillStyle = lit;
+    ctx.fillRect(0, 0, W, H);
+  } else if (kind === "chart") {
+    // bar chart
+    ctx.fillStyle = "#0e1018"; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#7ad7ff";
+    const bars = [0.35, 0.6, 0.45, 0.85, 0.7, 0.5];
+    const bw = W * 0.10;
+    bars.forEach((v, i) => {
+      const x = W * 0.10 + i * (bw + W * 0.025);
+      const h = H * v * 0.8;
+      ctx.fillRect(x, H - h - H * 0.10, bw, h);
+    });
+    // axis line
+    ctx.strokeStyle = "#3a4055"; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(W * 0.06, H * 0.10);
+    ctx.lineTo(W * 0.06, H * 0.90);
+    ctx.lineTo(W * 0.94, H * 0.90);
+    ctx.stroke();
+  }
+}
+
+/* ============================================================
+   Brightness sampling
+   ============================================================ */
+
+function canvasBrightness(canvas) {
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  // Downsample to 32x32 for cheap brightness average.
+  const off = document.createElement("canvas");
+  off.width = 32; off.height = 32;
+  off.getContext("2d").drawImage(canvas, 0, 0, 32, 32);
+  const data = off.getContext("2d").getImageData(0, 0, 32, 32).data;
+  let total = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    // BT.709 luma
+    total += 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+  }
+  const mean = total / (32 * 32);
+  return mean / 255;
+}
+
+/* ============================================================
+   Real-mode bridge — POST /api/analyze
+   ============================================================ */
+
+function canvasToRGBBase64(canvas, side = 16) {
+  const off = document.createElement("canvas");
+  off.width = side; off.height = side;
+  off.getContext("2d").drawImage(canvas, 0, 0, side, side);
+  const rgba = off.getContext("2d").getImageData(0, 0, side, side).data;
+  const rgb = new Uint8Array(side * side * 3);
+  for (let i = 0, j = 0; i < rgba.length; i += 4, j += 3) {
+    rgb[j] = rgba[i]; rgb[j + 1] = rgba[i + 1]; rgb[j + 2] = rgba[i + 2];
+  }
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let k = 0; k < rgb.length; k += CHUNK) {
+    bin += String.fromCharCode.apply(null, rgb.subarray(k, k + CHUNK));
+  }
+  return btoa(bin);
+}
+
+async function realAnalyze(imageB64, prompt) {
+  const resp = await fetch(CONFIG.apiBase + "/api/analyze", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image_b64: imageB64, prompt, backend: "mock" }),
+  });
+  if (!resp.ok) throw new Error("HTTP " + resp.status);
+  return resp.json();
+}
+
+function fakeAnalyze(canvas, prompt) {
+  // No server — synthesise something that looks plausible for the demo.
+  // Centre the focus on the brightest 16x16 region of the canvas.
+  const off = document.createElement("canvas");
+  const G = CONFIG.attnGridSize;
+  off.width = G; off.height = G;
+  off.getContext("2d").drawImage(canvas, 0, 0, G, G);
+  const px = off.getContext("2d").getImageData(0, 0, G, G).data;
+  const grid = [];
+  let bestI = 0, bestJ = 0, bestV = -1;
+  for (let i = 0; i < G; i++) {
+    const row = [];
+    for (let j = 0; j < G; j++) {
+      const k = (i * G + j) * 4;
+      const lum = 0.21 * px[k] + 0.72 * px[k + 1] + 0.07 * px[k + 2];
+      row.push(lum / 255);
+      if (lum > bestV) { bestV = lum; bestI = i; bestJ = j; }
+    }
+    grid.push(row);
+  }
+  // Smear the grid into a Gaussian centred on the brightest cell.
+  const sigma = G / 4.0;
+  const out = [];
+  for (let i = 0; i < G; i++) {
+    const r = [];
+    for (let j = 0; j < G; j++) {
+      const dy = i - bestI, dx = j - bestJ;
+      r.push(Math.exp(-(dx * dx + dy * dy) / (2 * sigma * sigma)));
+    }
+    out.push(r);
+  }
+  // Confidence proxy: how peaked the brightness was.
+  const meanLum = grid.flat().reduce((a, b) => a + b, 0) / (G * G);
+  const peak = Math.min(1, bestV / 255);
+  const confidence = Math.max(0.35, Math.min(0.97, peak - meanLum + 0.45));
+  return {
+    result: pickFakeAnswer(prompt, peak, meanLum),
+    confidence,
+    attention_grid: out,
+    latency_ms: 0.4 + Math.random() * 0.6,
+    backend: "simulated",
+    steps: [],
+  };
+}
+
+function pickFakeAnswer(prompt, peak, mean) {
+  if (peak > 0.85) return "A bright high-contrast region dominates the upper portion of the frame.";
+  if (peak > 0.6)  return "A clearly defined subject occupies the central area.";
+  if (mean < 0.25) return "A dim scene with one prominent illuminated source.";
+  return "The scene is approximately uniform — no single dominant subject.";
+}
+
+function focalFromGrid(grid) {
+  let bestI = 0, bestJ = 0, bestV = -1;
+  for (let i = 0; i < grid.length; i++) {
+    for (let j = 0; j < grid[i].length; j++) {
+      if (grid[i][j] > bestV) { bestV = grid[i][j]; bestI = i; bestJ = j; }
+    }
+  }
+  return { row: bestI, col: bestJ };
+}
+
+/* ============================================================
+   App state
+   ============================================================ */
+
+const state = {
+  eyes: [],          // [Eye, Eye?]
+  prompts: [],       // textareas (filled at compare time)
+  compareMode: false,
+  liveMode: false,
+  serverInfo: null,
+  brightness: null,
+  lastResult: null,
+};
+
+/* ============================================================
+   DOM refs
+   ============================================================ */
+
+const $ = (sel) => document.querySelector(sel);
+
+const stage = $("#stage");
+const dropZone = $("#drop-zone");
+const samplesEl = $("#samples");
+const promptEl = $("#prompt-1");
+const previewEl = $("#preview");
+const previewCanvas = $("#preview-canvas");
+const btnSee = $("#btn-see");
+const btnBlink = $("#btn-blink");
+const btnCompare = $("#btn-compare");
+const livePill = $("#live-pill");
+const liveText = $("#live-text");
+const telemEls = {
+  brightness: document.querySelector('[data-k="brightness"]'),
+  pupil: document.querySelector('[data-k="pupil"]'),
+  saccades: document.querySelector('[data-k="saccades"]'),
+  blinks: document.querySelector('[data-k="blinks"]'),
+  confidence: document.querySelector('[data-k="confidence"]'),
+  latency: document.querySelector('[data-k="latency"]'),
+  backend: document.querySelector('[data-k="backend"]'),
+  mode: document.querySelector('[data-k="mode"]'),
+};
+const confFill = $("#conf-fill");
+const answerCard = $("#answer-card");
+const answerText = $("#answer-text");
+const answerMeta = $("#answer-meta");
+
+/* ============================================================
+   Boot — build initial eye, paint sample, check live server
+   ============================================================ */
+
+function buildEye(seed) {
+  const eye = new Eye(seed);
+  eye.onTelemetry = updateTelemetry;
+  stage.appendChild(eye.root);
+  state.eyes.push(eye);
+  return eye;
+}
+
+function clearEyes() {
+  for (const e of state.eyes) { e.dispose(); e.root.remove(); }
+  state.eyes = [];
+}
+
+function updateTelemetry() {
+  if (!state.eyes[0]) return;
+  const e = state.eyes[0];
+  telemEls.pupil.textContent = e.pupilSize.toFixed(1) + " px";
+  telemEls.saccades.textContent = e.saccades;
+  telemEls.blinks.textContent = e.blinks;
+  if (state.brightness != null) {
+    telemEls.brightness.textContent = (state.brightness * 100).toFixed(0) + " %";
+  }
+  if (e.confidence != null) {
+    telemEls.confidence.firstChild.textContent = e.confidence.toFixed(3) + " ";
+    confFill.style.width = (e.confidence * 100).toFixed(0) + "%";
+    confFill.classList.toggle("low", e.confidence < 0.6);
+    telemEls.confidence.classList.remove("green", "warm", "hot");
+    if (e.confidence > 0.75) telemEls.confidence.classList.add("green");
+    else if (e.confidence > 0.55) telemEls.confidence.classList.add("warm");
+    else telemEls.confidence.classList.add("hot");
+  }
+  if (state.lastResult) {
+    telemEls.latency.textContent = state.lastResult.latency_ms.toFixed(2) + " ms";
+    telemEls.backend.textContent = state.lastResult.backend;
+  }
+  telemEls.mode.textContent = state.compareMode ? "compare (two eyes)" : "single eye";
+}
+
+async function checkLiveServer() {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 1500);
+    const resp = await fetch(CONFIG.apiBase + "/api/health", { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!resp.ok) throw new Error("nope");
+    const data = await resp.json();
+    state.liveMode = true;
+    state.serverInfo = data;
+    livePill.classList.add("connected");
+    liveText.innerHTML = `✓ live · v${data.version} · ${data.backends.join("·")}`;
+  } catch (err) {
+    state.liveMode = false;
+    livePill.classList.remove("connected");
+    liveText.innerHTML = `simulated · run <code>python demo/server.py</code>`;
+  }
+}
+
+/* ============================================================
+   Drop / sample handling
+   ============================================================ */
+
+dropZone.addEventListener("click", () => {
+  // Trigger hidden file input
+  const inp = document.createElement("input");
+  inp.type = "file"; inp.accept = "image/*";
+  inp.addEventListener("change", () => {
+    if (inp.files && inp.files[0]) loadFile(inp.files[0]);
+  });
+  inp.click();
+});
+dropZone.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  dropZone.classList.add("over");
+});
+dropZone.addEventListener("dragleave", () => dropZone.classList.remove("over"));
+dropZone.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dropZone.classList.remove("over");
+  const file = e.dataTransfer.files[0];
+  if (file && file.type.startsWith("image/")) loadFile(file);
+});
+
+function loadFile(file) {
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const img = new Image();
+    img.onload = () => {
+      const ctx = previewCanvas.getContext("2d");
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, previewCanvas.width, previewCanvas.height);
+      ctx.drawImage(img, 0, 0, previewCanvas.width, previewCanvas.height);
+      previewEl.classList.add("visible");
+      onImageReady();
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+samplesEl.addEventListener("click", (e) => {
+  const btn = e.target.closest(".sample-chip");
+  if (!btn) return;
+  document.querySelectorAll(".sample-chip").forEach(c => c.classList.remove("active"));
+  btn.classList.add("active");
+  paintSample(previewCanvas, btn.dataset.sample);
+  previewEl.classList.add("visible");
+  onImageReady();
+});
+
+function onImageReady() {
+  state.brightness = canvasBrightness(previewCanvas);
+  for (const eye of state.eyes) eye.setPupilFromBrightness(state.brightness);
+  updateTelemetry();
+}
+
+/* ============================================================
+   See — main analysis trigger
+   ============================================================ */
+
+btnSee.addEventListener("click", () => doSee());
+btnBlink.addEventListener("click", () => {
+  for (const eye of state.eyes) eye.blink();
+});
+
+async function doSee() {
+  if (!previewEl.classList.contains("visible")) {
+    // No image yet — pick a default sample so the user always sees something.
+    document.querySelector('[data-sample="bright"]').click();
+    return;
+  }
+  btnSee.disabled = true;
+
+  const prompt = promptEl.value.trim() || "What is in this image?";
+  const imageB64 = canvasToRGBBase64(previewCanvas, 16);
+
+  let result;
+  if (state.liveMode) {
+    try {
+      result = await realAnalyze(imageB64, prompt);
+    } catch (err) {
+      console.warn("real analyze failed, falling back:", err);
+      result = fakeAnalyze(previewCanvas, prompt);
+    }
+  } else {
+    // small artificial delay so the UX rhythm isn't instant
+    await new Promise(r => setTimeout(r, 320));
+    result = fakeAnalyze(previewCanvas, prompt);
+  }
+
+  state.lastResult = result;
+  applyResult(state.eyes[0], result);
+
+  // Compare mode: optional second eye runs the same analysis but with a
+  // perturbed prompt — gives users an immediate A/B feel.
+  if (state.compareMode && state.eyes[1]) {
+    const altPrompt = prompt + " (with high detail)";
+    let alt;
+    try {
+      alt = state.liveMode
+        ? await realAnalyze(imageB64, altPrompt)
+        : fakeAnalyze(previewCanvas, altPrompt);
+    } catch (err) {
+      alt = fakeAnalyze(previewCanvas, altPrompt);
+    }
+    applyResult(state.eyes[1], alt);
+  }
+
+  btnSee.disabled = false;
+}
+
+function applyResult(eye, result) {
+  const focal = focalFromGrid(result.attention_grid);
+  eye.renderHeatmap(result.attention_grid, focal);
+  eye.setConfidence(result.confidence);
+  showAnswer(result);
+  updateTelemetry();
+}
+
+function showAnswer(result) {
+  answerCard.style.display = "block";
+  answerCard.classList.toggle("live", state.liveMode);
+  answerText.textContent = result.result;
+  answerMeta.innerHTML = `
+    <span>backend <b>${escapeHTML(result.backend)}</b></span>
+    <span>confidence <b>${result.confidence.toFixed(3)}</b></span>
+    <span>latency <b>${result.latency_ms.toFixed(2)} ms</b></span>
+    <span>${state.liveMode ? "live" : "simulated"}</span>
+  `;
+}
+
+function escapeHTML(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+
+/* ============================================================
+   Compare mode — split the eye into two
+   ============================================================ */
+
+btnCompare.addEventListener("click", () => {
+  state.compareMode = !state.compareMode;
+  btnCompare.classList.toggle("active", state.compareMode);
+  if (state.compareMode) {
+    // Add a second eye with a different seed → different fibers/crypts/veins.
+    const seed = 1 + Math.floor(Math.random() * 9999);
+    const second = buildEye(seed);
+    if (state.brightness != null) second.setPupilFromBrightness(state.brightness);
+    stage.classList.add("compare");
+    // Re-apply last result to the new eye for instant feedback.
+    if (state.lastResult) applyResult(second, state.lastResult);
+  } else {
+    // Remove all but the first eye.
+    while (state.eyes.length > 1) {
+      const e = state.eyes.pop();
+      e.dispose();
+      e.root.remove();
+    }
+    stage.classList.remove("compare");
+  }
+  updateTelemetry();
+});
+
+/* ============================================================
+   Init
+   ============================================================ */
+
+(function init() {
+  buildEye(1);
+  checkLiveServer();
+
+  // Telemetry tick — even when nothing happens, keep it lively.
+  setInterval(updateTelemetry, 1000);
+
+  // Friendly first-load: paint the bright sample so the eye has
+  // something to react to without forcing user input.
+  document.querySelector('[data-sample="bright"]').click();
+})();
 </script>
 </body>
 </html>
