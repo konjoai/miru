@@ -150,9 +150,17 @@ def test_explain_unknown_model_returns_400(client: TestClient, synthetic_png_b64
 
 
 def test_explain_roadmap_method_returns_400(client: TestClient, synthetic_png_b64: str) -> None:
+    """Any method in ROADMAP_METHODS must be rejected with a roadmap message.
+
+    Picks the first roadmap method dynamically so this stays green as
+    methods are promoted from roadmap → implemented.
+    """
+    if not ROADMAP_METHODS:
+        pytest.skip("no roadmap methods left to test")
+    method = ROADMAP_METHODS[0]
     resp = client.post(
         "/explain",
-        json={"image_b64": synthetic_png_b64, "model_name": "mock", "method": "gradcam"},
+        json={"image_b64": synthetic_png_b64, "model_name": "mock", "method": method},
     )
     assert resp.status_code == 400
     assert "roadmap" in resp.json()["detail"].lower()
@@ -246,3 +254,106 @@ def test_compare_unknown_model_returns_400(client: TestClient) -> None:
 
 def test_default_bench_n_is_within_cap() -> None:
     assert 1 <= DEFAULT_BENCH_N <= MAX_BENCH_N
+
+
+# ---------------------------------------------------------------------------
+# /explain — newly-implemented methods (lime, gradcam)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("method", ["attention", "lime", "gradcam"])
+def test_explain_each_implemented_method(
+    client: TestClient, synthetic_png_b64: str, method: str
+) -> None:
+    payload = {
+        "image_b64": synthetic_png_b64,
+        "model_name": "mock",
+        "method": method,
+        "question": "where?",
+        "top_k": 3,
+        # Keep budgets tiny for fast tests.
+        "n_samples": 8,
+        "n_segments": 9,
+        "occlusion_grid": 4,
+    }
+    resp = client.post("/explain", json=payload)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["method"] == method
+    grid = body["attention_grid"]
+    flat = [v for row in grid for v in row]
+    assert all(0.0 <= v <= 1.0 for v in flat)
+    assert len(body["overlay_b64"]) > 100
+
+
+# ---------------------------------------------------------------------------
+# /explain/compare
+# ---------------------------------------------------------------------------
+
+
+def test_explain_compare_returns_two_overlays(client: TestClient, synthetic_png_b64: str) -> None:
+    payload = {
+        "image_b64": synthetic_png_b64,
+        "model_name": "mock",
+        "method_a": "attention",
+        "method_b": "gradcam",
+        "occlusion_grid": 4,
+        "top_k": 2,
+    }
+    resp = client.post("/explain/compare", json=payload)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["method_a"] == "attention"
+    assert body["method_b"] == "gradcam"
+    assert len(body["a_overlay_b64"]) > 100
+    assert len(body["b_overlay_b64"]) > 100
+    assert len(body["a_top_regions"]) == 2
+    assert len(body["b_top_regions"]) == 2
+    a_grid = body["a_attention_grid"]
+    b_grid = body["b_attention_grid"]
+    assert len(a_grid) == len(b_grid)
+    # Different methods should generally produce different heatmaps.
+    a_flat = [v for row in a_grid for v in row]
+    b_flat = [v for row in b_grid for v in row]
+    assert a_flat != b_flat
+
+
+def test_explain_compare_same_method_returns_400(
+    client: TestClient, synthetic_png_b64: str
+) -> None:
+    resp = client.post(
+        "/explain/compare",
+        json={
+            "image_b64": synthetic_png_b64,
+            "model_name": "mock",
+            "method_a": "attention",
+            "method_b": "attention",
+        },
+    )
+    assert resp.status_code == 400
+    assert "differ" in resp.json()["detail"]
+
+
+def test_explain_compare_unknown_method_returns_400(
+    client: TestClient, synthetic_png_b64: str
+) -> None:
+    resp = client.post(
+        "/explain/compare",
+        json={
+            "image_b64": synthetic_png_b64,
+            "model_name": "mock",
+            "method_a": "attention",
+            "method_b": "shap",
+        },
+    )
+    assert resp.status_code == 400
+
+
+def test_methods_lists_lime_and_gradcam_as_implemented(client: TestClient) -> None:
+    resp = client.get("/methods")
+    assert resp.status_code == 200
+    statuses = {m["name"]: m["status"] for m in resp.json()["methods"]}
+    assert statuses["attention"] == "implemented"
+    assert statuses["lime"] == "implemented"
+    assert statuses["gradcam"] == "implemented"
+    assert statuses["shap"] == "roadmap"

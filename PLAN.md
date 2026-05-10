@@ -261,14 +261,51 @@ still skip without `MIRU_TEST_REAL_BACKENDS=1`.
 
 ---
 
-## Phase 13 — TBD
+## Phase 13 — LIME + GradCAM + side-by-side eye UI (in progress)
+
+**Goal:** Promote two `roadmap` explainers to `implemented` behind the deployable
+`/explain` surface and ship an interactive eye-UI demo that uses the new
+`/explain/compare` endpoint for side-by-side method comparison.
+
+**Delivered:**
+- `miru/lime_explainer.py` — pure-NumPy LIME (Ribeiro 2016): grid-based
+  superpixel segmentation, mean-colour occlusion, weighted-LSQ surrogate via
+  `np.linalg.lstsq`. Deterministic under seed; no scikit-learn dependency.
+- `miru/gradcam_explainer.py` — occlusion-sensitivity (Zeiler & Fergus 2014).
+  The gradient-free cousin of true Grad-CAM, exposed under the `gradcam` name
+  with an explicit docstring that real backprop-based Grad-CAM requires a
+  torch/CNN backend (kept as future work).
+- `POST /explain` dispatches on `method ∈ {attention, lime, gradcam}` —
+  uniform response shape so callers stay method-agnostic.
+- `POST /explain/compare` — runs two methods on one image, returns both
+  overlays + grids + top regions in a single call.
+- `GET /methods` reports lime + gradcam as `implemented`; only `shap` remains
+  on the roadmap.
+- New bounded request fields: `n_samples ≤ 256`, `n_segments ≤ 144`,
+  `occlusion_grid ≤ 16` — bounds backend.infer() calls per request.
+- `demo/visual.html` — single stylized eye on a deep `#06060f` field with a
+  Konjo-purple iris, two counter-rotating ring layers, breathing pulse;
+  image loads INTO the iris (pupil swells 130→200px); heatmap bleeds outward
+  with `mix-blend-mode: screen`; method-icon tiles for gradcam / lime /
+  attention; numbered amber focus rings for top-3 regions; "split view"
+  divides the eye into two for `/explain/compare`.
+- `tests/test_explainers.py` (8) + `api/test_api.py` (7 new) — parametrised
+  `/explain` over each method, `/explain/compare` happy-path + error
+  contracts, `/methods` status guard.
+
+**Ship gate:** 252/252 tests pass (15 new, 237 existing); 4 real-backend tests
+still skip without `MIRU_TEST_REAL_BACKENDS=1`.
+
+---
+
+## Phase 14 — TBD
 
 Open candidates:
 - True Grad-CAM run against a torch-loaded CLIP-RN50 checkpoint (RN50 has
   conv layers, unlike ViT-B/32) — drop-in `clip-rn` backend + benchmark
-  comparison to attention-fallback Grad-CAM.
-- LIME / SHAP perturbation-based explainers behind the deployable `/explain`
-  surface — flip `roadmap` entries to `implemented`.
+  comparison to occlusion-sensitivity Grad-CAM.
+- SHAP perturbation explainer behind the same `/explain` surface — flip the
+  last roadmap entry to `implemented`.
 - Native VLM streaming backend (LLaVA / Idefics / Qwen-VL with token-level
   attention) so `/analyze/stream` produces genuinely incremental reasoning
   instead of replaying a single-shot inference.
