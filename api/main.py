@@ -13,7 +13,7 @@ Endpoints
 Method semantics
 ----------------
 
-Three explanation methods are implemented:
+Four explanation methods are implemented:
 
 - ``attention`` — direct min-max-normalized extraction of the backend's
   per-patch attention weights.
@@ -23,9 +23,9 @@ Three explanation methods are implemented:
   the gradient-free cousin of true Grad-CAM.  See
   :mod:`miru.gradcam_explainer` for the rationale on why we ship the
   black-box variant under this name.
-
-``shap`` is on the roadmap and returns 400 with a clear message.  Konjo:
-no hallucinated APIs, no silent substitution.
+- ``shap``      — SHAP-style tile-masking attribution (Lundberg & Lee 2017).
+  Pure-NumPy sampling; no ``shap`` library required.
+  See :mod:`miru.shap_explainer`.
 """
 from __future__ import annotations
 
@@ -38,6 +38,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
 from miru import gradcam_explainer, lime_explainer
+from miru.shap_explainer import SHAPConfig, SHAPExplainer
 from miru.attention.extractor import AttentionExtractor
 from miru.bench.comparison import compare_backends
 from miru.bench.runner import run_benchmark
@@ -58,8 +59,8 @@ DEFAULT_BENCH_SEED = 42
 DEFAULT_BENCH_SIZE = 64
 MAX_BENCH_SIZE = 128
 
-IMPLEMENTED_METHODS: tuple[str, ...] = ("attention", "lime", "gradcam")
-ROADMAP_METHODS: tuple[str, ...] = ("shap",)
+IMPLEMENTED_METHODS: tuple[str, ...] = ("attention", "lime", "gradcam", "shap")
+ROADMAP_METHODS: tuple[str, ...] = ()
 
 # Bound the budgets on the perturbation-based methods so a public deploy
 # can't be made to do unbounded backend.infer() calls per request.
@@ -133,6 +134,8 @@ class ExplainRequest(BaseModel):
     n_samples: int = Field(64, ge=2, le=MAX_LIME_SAMPLES, description="LIME perturbation count.")
     n_segments: int = Field(36, ge=4, le=MAX_LIME_SEGMENTS, description="LIME superpixel count.")
     occlusion_grid: int = Field(8, ge=2, le=MAX_OCCLUSION_GRID, description="GradCAM occlusion grid side.")
+    shap_grid: int = Field(7, ge=2, le=16, description="SHAP tile grid side (shap_grid × shap_grid tiles).")
+    shap_samples: int = Field(32, ge=2, le=MAX_LIME_SAMPLES, description="SHAP coalitions sampled per tile.")
 
 
 class TopRegion(BaseModel):
@@ -166,6 +169,8 @@ class ExplainCompareRequest(BaseModel):
     top_k: int = Field(5, ge=1, le=64)
     n_samples: int = Field(48, ge=2, le=MAX_LIME_SAMPLES)
     n_segments: int = Field(36, ge=4, le=MAX_LIME_SEGMENTS)
+    shap_grid: int = Field(5, ge=2, le=16, description="SHAP tile grid side.")
+    shap_samples: int = Field(16, ge=2, le=MAX_LIME_SAMPLES, description="SHAP coalitions per tile.")
     occlusion_grid: int = Field(6, ge=2, le=MAX_OCCLUSION_GRID)
 
 
@@ -271,7 +276,11 @@ _METHOD_DESCRIPTIONS: dict[str, str] = {
         "the image and measure attention shift per cell. The gradient-free "
         "cousin of true Grad-CAM; backend-agnostic."
     ),
-    "shap": "Shapley-value attribution — on the roadmap; not yet implemented.",
+    "shap": (
+        "SHAP-style tile-masking attribution (Lundberg & Lee 2017): "
+        "estimates φᵢ ≈ E[f(x)|xᵢ present] − E[f(x)|xᵢ absent] by "
+        "sampling random tile coalitions.  Pure-NumPy, no shap library."
+    ),
 }
 
 
@@ -523,6 +532,22 @@ def _run_method(method: str, backend, image_array: np.ndarray, req):
         )
         return baseline, result.saliency
 
+    if method == "shap":
+        baseline = backend.infer(image_array, req.question)
+        cfg = SHAPConfig(
+            grid_size=req.shap_grid,
+            n_samples=req.shap_samples,
+            seed=42,
+        )
+        pil_image = _float_array_to_pil(image_array)
+        attribution = SHAPExplainer(backend, cfg).explain(pil_image, req.question)
+        # Shift [-1, 1] → [0, 1] for the overlay pipeline.
+        norm = (attribution.astype(np.float32) + 1.0) / 2.0
+        saliency = _EXTRACTOR.resize_to_grid(
+            norm, settings.attention_resolution, settings.attention_resolution
+        )
+        return baseline, saliency
+
     raise HTTPException(status_code=400, detail=f"unsupported method: {method}")
 
 
@@ -542,6 +567,14 @@ def _decode_to_float_array(image_b64: str) -> np.ndarray:
             detail=f"image_b64 is not a decodable image: {exc}",
         ) from exc
     return rgba[..., :3].astype(np.float32) / 255.0
+
+
+def _float_array_to_pil(image_array: np.ndarray) -> "Image.Image":
+    """Convert a float32 (H, W, 3) ∈ [0, 1] array to a PIL RGB Image."""
+    from PIL import Image
+
+    uint8 = np.clip(image_array * 255.0, 0, 255).astype(np.uint8)
+    return Image.fromarray(uint8, mode="RGB")
 
 
 __all__ = ["app"]

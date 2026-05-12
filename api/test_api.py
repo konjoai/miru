@@ -343,17 +343,18 @@ def test_explain_compare_unknown_method_returns_400(
             "image_b64": synthetic_png_b64,
             "model_name": "mock",
             "method_a": "attention",
-            "method_b": "shap",
+            "method_b": "totally-unknown-method",
         },
     )
     assert resp.status_code == 400
 
 
-def test_methods_lists_lime_and_gradcam_as_implemented(client: TestClient) -> None:
+def test_methods_lists_all_four_as_implemented(client: TestClient) -> None:
+    """All four explanation methods must be listed as implemented in Phase 14+."""
     resp = client.get("/methods")
     assert resp.status_code == 200
     statuses = {m["name"]: m["status"] for m in resp.json()["methods"]}
     assert statuses["attention"] == "implemented"
     assert statuses["lime"] == "implemented"
     assert statuses["gradcam"] == "implemented"
-    assert statuses["shap"] == "roadmap"
+    assert statuses["shap"] == "implemented"

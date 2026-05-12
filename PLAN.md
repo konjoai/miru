@@ -303,14 +303,40 @@ still skip without `MIRU_TEST_REAL_BACKENDS=1`.
 
 ---
 
-## Phase 14 — TBD
+## Phase 14 — SHAP Perturbation Explainer (v1.1.0) ✅
+
+**Goal:** Add a SHAP-style tile-masking attribution explainer, promote `shap`
+from roadmap → implemented, and ship 18 new tests.
+
+**Delivered:**
+- `miru/shap_explainer.py` — `SHAPConfig` (dataclass) + `SHAPExplainer` class.
+  Implements the Shapley approximation:
+  φᵢ ≈ (1/M) Σⱼ [ f(S_j ∪ {i}) − f(S_j) ] via tile-mask sampling.
+  Pure NumPy + PIL; no `shap` library dependency.  Attribution in [-1, 1]
+  float32; bilinear upsample to full image resolution.
+- `api/main.py` — `shap` promoted from `ROADMAP_METHODS` to
+  `IMPLEMENTED_METHODS`; `_run_method` dispatches to `SHAPExplainer`; request
+  schema extended with `shap_grid` and `shap_samples` fields; `_float_array_to_pil`
+  helper converts float32 arrays for PIL-expecting code.
+- `tests/test_shap_explainer.py` — 18 tests: config defaults, shape/dtype/range
+  contracts, determinism, baseline variants, masked-image invariants, registry
+  and API integration.
+- Updated `api/test_api.py` — `test_explain_compare_unknown_method_returns_400`
+  updated to use a genuinely unknown method (shap is now implemented);
+  `test_methods_lists_lime_and_gradcam_as_implemented` updated to assert all
+  four methods as implemented.
+
+**Ship gate:** 281/281 tests pass (18 new, 263 existing); 4 real-backend tests
+still skip without `MIRU_TEST_REAL_BACKENDS=1`.
+
+---
+
+## Phase 15 — TBD
 
 Open candidates:
 - True Grad-CAM run against a torch-loaded CLIP-RN50 checkpoint (RN50 has
   conv layers, unlike ViT-B/32) — drop-in `clip-rn` backend + benchmark
   comparison to occlusion-sensitivity Grad-CAM.
-- SHAP perturbation explainer behind the same `/explain` surface — flip the
-  last roadmap entry to `implemented`.
 - Native VLM streaming backend (LLaVA / Idefics / Qwen-VL with token-level
   attention) so `/analyze/stream` produces genuinely incremental reasoning
   instead of replaying a single-shot inference.
