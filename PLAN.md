@@ -1,8 +1,8 @@
 # PLAN.md — Miru Roadmap
 
 **Project:** Miru — Multimodal Reasoning Tracer  
-**Current version:** v0.9.0  
-**Status:** Latency profiler complete, 196 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
+**Current version:** v1.0.0  
+**Status:** Prometheus metrics endpoint complete, 233 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 
@@ -185,10 +185,33 @@ skip without `MIRU_TEST_REAL_BACKENDS=1`.
 
 ---
 
-## Phase 10 — TBD
+## Phase 10 — Prometheus Metrics Endpoint (v1.0.0) ✅ COMPLETE
+
+**Goal:** Expose per-backend request counts, latency histograms, and active-backend gauge in Prometheus text format via `GET /metrics`.
+
+**Delivered:**
+
+| Deliverable | File | Notes |
+|---|---|---|
+| `MiruMetrics` collector | `miru/metrics/collector.py` | Counter, Histogram, Gauge; no-op if prometheus absent |
+| Metrics package | `miru/metrics/__init__.py` | `MiruMetrics`, `get_metrics()` singleton |
+| `GET /metrics` endpoint | `miru/api/routes.py` | Returns 200 + empty body when prometheus absent |
+| `POST /analyze` instrumentation | `miru/api/routes.py` | Wraps inference in try/finally; metrics errors log warning only |
+| Optional dep group | `pyproject.toml` | `[metrics]` — `prometheus-client>=0.17.0` |
+| 24 new tests | `tests/test_metrics.py` | No-op, full, API, thread-safety coverage |
+
+**Metrics exposed:**
+- `miru_requests_total{backend, status}` — Counter; status = "ok" | "error"
+- `miru_latency_seconds{backend}` — Histogram; buckets: 0.01…10.0 s
+- `miru_active_backends` — Gauge; distinct backends with ≥ 1 request
+
+**Ship gate:** 233/233 tests pass (4 real-backend tests skip without `MIRU_TEST_REAL_BACKENDS=1`). Milestone release v1.0.0.
+
+---
+
+## Phase 11 — TBD
 
 Open candidates:
 - Native VLM streaming backend (LLaVA / Idefics / Qwen-VL with token-level attention) so `/analyze/stream` produces genuinely incremental reasoning instead of replaying a single-shot inference.
 - Real-image benchmark slice: plug VQA-X or COCO-Saliency behind the existing metric interface and publish the curve alongside the synthetic baseline.
 - gRPC alternative to the FastAPI surface for in-cluster low-latency inference.
-- Prometheus metrics endpoint (`/metrics`) exposing per-backend latency histograms from live `/analyze` traffic.

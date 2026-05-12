@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import time
 
 import numpy as np
@@ -10,6 +11,7 @@ from fastapi.responses import Response, StreamingResponse
 
 from miru.api.streaming import stream_analyze
 from miru.config import settings
+from miru.metrics import get_metrics
 from miru.models import registry
 from miru.reasoning.tracer import ReasoningTracer
 from miru.recorder import maybe_record
@@ -20,12 +22,7 @@ from miru.schemas import (
     ReasoningTrace,
 )
 
-try:
-    from miru.metrics import MiruMetrics
-
-    _metrics = MiruMetrics()
-except ImportError:
-    _metrics = None  # type: ignore[assignment]
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Initialise backend registry once at module import time.
@@ -55,15 +52,14 @@ def health() -> HealthResponse:
 
 @router.get("/metrics")
 def metrics() -> Response:
-    """Return Prometheus metrics in text exposition format.
+    """Return Prometheus metrics in text exposition format (Prometheus 0.0.4).
 
-    Returns a 404 if prometheus-client is not installed.
+    Returns an empty 200 response when prometheus-client is not installed so
+    that scrape configurations never receive a hard error.
     """
-    if _metrics is None:
-        return Response("Metrics not available: prometheus-client not installed", status_code=404)
-
+    body = get_metrics().expose()
     return Response(
-        _metrics.render(),
+        body,
         media_type="text/plain; version=0.0.4; charset=utf-8",
     )
 
@@ -96,12 +92,18 @@ def analyze(
         backend = registry.get(settings.default_backend)
 
     t0 = time.perf_counter()
-    vlm_output = backend.infer(image_array, payload.question)
-    latency_s = time.perf_counter() - t0
-    latency_ms = latency_s * 1_000.0
-
-    if _metrics is not None:
-        _metrics.observe_analyze(backend.name, latency_s)
+    success = True
+    try:
+        vlm_output = backend.infer(image_array, payload.question)
+    except Exception:
+        success = False
+        raise
+    finally:
+        latency_ms = (time.perf_counter() - t0) * 1_000.0
+        try:
+            get_metrics().record_request(backend.name, latency_ms, success)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("metrics.record_request failed: %s", exc)
 
     trace = _tracer.trace(
         vlm_output,
@@ -156,9 +158,11 @@ def analyze_stream(
             record=True,
         ):
             yield chunk
-        latency_s = time.perf_counter() - t0
-        if _metrics is not None:
-            _metrics.observe_stream(backend.name, latency_s)
+        latency_ms = (time.perf_counter() - t0) * 1_000.0
+        try:
+            get_metrics().record_request(backend.name, latency_ms, success=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("metrics.record_request (stream) failed: %s", exc)
 
     return StreamingResponse(
         _timed_generator(),
