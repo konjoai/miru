@@ -139,6 +139,13 @@ def index():
     return FileResponse(_DEMO_DIR / "index.html")
 
 
+@app.get("/visual.html", include_in_schema=False)
+@app.get("/visual", include_in_schema=False)
+def visual():
+    """Photorealistic-eye demo at /visual or /visual.html."""
+    return FileResponse(_DEMO_DIR / "visual.html")
+
+
 # ---------------------------------------------------------------------------
 # /api/health
 # ---------------------------------------------------------------------------

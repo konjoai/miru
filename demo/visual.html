@@ -1,0 +1,2324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Miru — The Eye</title>
+<!--
+  demo/visual.html — a photorealistic eye that runs real Miru analysis.
+
+  Pure frontend: the only network calls are GET /api/health and POST /api/analyze.
+  Both already exist in demo/server.py. With the server running, image drops
+  produce real ReasoningTracer output; without it, the page falls back to
+  procedurally generated "vision" so the page still demos cold.
+
+  All seven visual enhancements live here:
+    1. Photorealistic iris    — 5-layer construction with conic fibers/crypts
+    2. Pupil dilation         — driven by sampled image brightness
+    3. Micro-saccades         — random translate every 3-5s
+    4. Heatmap fluid bloom    — scale + blur ease-out from focal point
+    5. Two-eyelid blink       — single clip-path with asymmetric upper/lower
+    6. Eye split / compare    — single eye becomes two, each independent
+    7. Sclera redness         — confidence-coupled red tint + brighter veins
+-->
+<style>
+  /* ============================================================
+     Tokens
+     ============================================================ */
+  :root {
+    --bg-0: #050609;
+    --bg-1: #0a0c12;
+    --bg-2: #11141d;
+    --line: #1d2230;
+    --line-2: #2a3146;
+    --fg-0: #eef0f7;
+    --fg-1: #a3a9bd;
+    --fg-2: #6b7088;
+    --fg-3: #4a4e62;
+    --accent: #7ad7ff;
+    --accent-2: #b08cff;
+    --accent-3: #ff8ad3;
+    --green: #69e896;
+    --hot: #ff5e7a;
+    --warm: #f6c177;
+
+    /* Eye anatomy */
+    --flesh-1: #2a1418;       /* deep socket — keeps lid colour from screaming */
+    --flesh-2: #4a2228;
+    --sclera: #f6efe6;        /* slightly warm white */
+    --sclera-shade: #d6cab3;
+    --vein-red: #b62a3a;
+
+    --grad: linear-gradient(135deg, #7ad7ff 0%, #b08cff 50%, #ff8ad3 100%);
+    --mono: ui-monospace, "JetBrains Mono", "Fira Code", "SF Mono", Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Inter", "Helvetica Neue", system-ui, sans-serif;
+
+    /* Sizing */
+    --eye-w: 380px;
+    --eye-h: 230px;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: radial-gradient(ellipse 90% 60% at 50% 0%, rgba(176, 140, 255, 0.06), transparent 60%),
+                radial-gradient(ellipse 60% 50% at 50% 100%, rgba(122, 215, 255, 0.05), transparent 60%),
+                var(--bg-0);
+    color: var(--fg-0);
+    font-family: var(--sans);
+    line-height: 1.5;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ============================================================
+     Layout
+     ============================================================ */
+  .container { max-width: 1280px; margin: 0 auto; padding: 0 28px; }
+  header.top {
+    border-bottom: 1px solid var(--line);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    background: rgba(5, 6, 9, 0.6);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  header.top .row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 0; gap: 16px;
+  }
+  header.top .brand {
+    display: flex; align-items: center; gap: 12px; font-weight: 600;
+  }
+  header.top .brand .glyph {
+    width: 22px; height: 22px;
+    background: var(--grad); border-radius: 50%;
+    box-shadow: 0 0 18px rgba(176, 140, 255, 0.4);
+  }
+  header.top nav { display: flex; gap: 22px; font-size: 13px; color: var(--fg-1); }
+  header.top nav a { color: var(--fg-1); text-decoration: none; transition: color .15s; }
+  header.top nav a:hover { color: var(--fg-0); }
+
+  .live-pill {
+    display: inline-flex; gap: 8px; align-items: center;
+    padding: 4px 12px; border-radius: 999px;
+    background: var(--bg-2); border: 1px solid var(--line-2);
+    font-family: var(--mono); font-size: 12px; color: var(--fg-1);
+    transition: all .25s;
+  }
+  .live-pill .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--fg-3);
+  }
+  .live-pill.connected {
+    border-color: rgba(105, 232, 150, 0.4);
+    background: rgba(105, 232, 150, 0.08);
+    color: var(--green);
+  }
+  .live-pill.connected .dot {
+    background: var(--green);
+    animation: pulse 1.6s infinite;
+  }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(105, 232, 150, 0.6); }
+    70%  { box-shadow: 0 0 0 8px rgba(105, 232, 150, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(105, 232, 150, 0); }
+  }
+
+  /* ============================================================
+     Main grid
+     ============================================================ */
+  main {
+    padding: 64px 0 96px;
+    display: grid;
+    grid-template-columns: 320px 1fr 320px;
+    gap: 40px;
+    align-items: start;
+  }
+  @media (max-width: 1100px) {
+    main { grid-template-columns: 1fr; gap: 32px; }
+  }
+
+  .lede { grid-column: 1 / -1; text-align: center; margin-bottom: 16px; }
+  .lede .eyebrow {
+    display: inline-block;
+    color: var(--accent); font-family: var(--mono); font-size: 11px;
+    letter-spacing: 0.22em; text-transform: uppercase; margin-bottom: 14px;
+  }
+  .lede h1 {
+    font-size: clamp(40px, 6vw, 70px);
+    font-weight: 600; letter-spacing: -0.025em; line-height: 1.05;
+    margin: 0;
+  }
+  .lede h1 .accent {
+    background: var(--grad);
+    -webkit-background-clip: text; background-clip: text;
+    color: transparent;
+  }
+  .lede p {
+    color: var(--fg-1); max-width: 640px; margin: 16px auto 0;
+    font-size: 16px;
+  }
+
+  /* ============================================================
+     The Eye Stage
+     ============================================================ */
+  .stage-wrap {
+    display: flex; justify-content: center;
+    grid-column: 2 / 3;
+  }
+  @media (max-width: 1100px) {
+    .stage-wrap { grid-column: 1 / -1; }
+  }
+
+  .eye-stage {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    padding: 36px 24px;
+    min-height: 320px;
+    position: relative;
+    transition: gap 0.6s cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  .eye-stage.compare { gap: 40px; }
+
+  /* Each eye-rig is a flesh-toned socket containing the spherical eye.
+     The "socket" is what the lids reveal when they close — so the lid
+     elements are NOT separate, they are simply the socket showing
+     through a clip-path on the eye element. */
+  .eye-rig {
+    width: var(--eye-w);
+    height: var(--eye-h);
+    position: relative;
+    transition: width 0.6s cubic-bezier(0.23, 1, 0.32, 1),
+                opacity 0.45s ease;
+    flex-shrink: 0;
+  }
+  .eye-rig.collapsed {
+    width: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* The flesh ring around the eye — the bezel that becomes visible when
+     the lid descends. A radial gradient gives it depth. */
+  .eye-socket {
+    position: absolute;
+    inset: -28px -36px;
+    border-radius: 50%;
+    background: radial-gradient(ellipse at 50% 50%,
+      var(--flesh-2) 0%,
+      var(--flesh-1) 60%,
+      var(--bg-1) 95%);
+    box-shadow:
+      inset 0 -10px 24px rgba(0, 0, 0, 0.6),
+      inset 0 14px 22px rgba(255, 255, 255, 0.04);
+    z-index: 1;
+  }
+
+  /* The eye itself — clipped by clip-path during a blink. The almond
+     shape comes from a border-radius trick: a bigger horizontal radius
+     than vertical produces the eye-shaped reveal. */
+  .eye {
+    position: absolute;
+    inset: 0;
+    border-radius: 50% / 50%;
+    overflow: hidden;
+    z-index: 2;
+    /* clip-path is animated by JS for the blink — these are the open values. */
+    clip-path: inset(0 0 0 0);
+    transition: clip-path 90ms ease-out;
+  }
+
+  .sclera {
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(ellipse at 50% 60%, var(--sclera) 0%, var(--sclera-shade) 100%);
+    transition: filter 0.4s ease, box-shadow 0.4s ease;
+  }
+  /* When the model is uncertain, the sclera reddens slightly — driven by
+     a CSS variable so JS can interpolate it smoothly. */
+  .sclera::after {
+    content: "";
+    position: absolute; inset: 0;
+    background: radial-gradient(ellipse at 50% 50%,
+      transparent 30%,
+      rgba(180, 30, 30, var(--uncertainty, 0)) 100%);
+    transition: background 0.5s ease;
+    pointer-events: none;
+  }
+
+  /* Conjunctival veins — branching SVG paths injected at init. */
+  .veins {
+    position: absolute; inset: 0;
+    pointer-events: none;
+    opacity: 0.4;
+    transition: opacity 0.5s ease;
+  }
+  .veins svg { width: 100%; height: 100%; display: block; }
+
+  /* ============================================================
+     The Iris — five layers + canvas heatmap + pupil + specular
+     ============================================================ */
+  .iris-wrap {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 44%;
+    aspect-ratio: 1 / 1;
+    transform: translate(-50%, -50%);
+    pointer-events: auto;
+    z-index: 3;
+    /* The micro-saccades apply translate to .iris-mover (a child) so the
+       wrap-level centering remains intact. */
+  }
+  .iris-mover {
+    position: absolute; inset: 0;
+    border-radius: 50%;
+    overflow: hidden;
+    box-shadow:
+      0 0 0 1px rgba(0, 0, 0, 0.5),
+      inset 0 0 12px rgba(0, 0, 0, 0.55);
+    transition: transform 200ms cubic-bezier(0.5, 0, 0.5, 1);
+    will-change: transform;
+  }
+
+  .iris-layer {
+    position: absolute; inset: 0;
+    border-radius: 50%;
+    pointer-events: none;
+  }
+
+  /* Layer 1 — the warm-to-dark base gradient, exactly per spec. */
+  .iris-base {
+    background: radial-gradient(circle at 50% 50%,
+      #3a1800 0%,
+      #7c3a00 30%,
+      #1a0a40 60%,
+      #000000 100%);
+  }
+
+  /* Layer 1b — confidence tint. An HSL-driven overlay whose hue/sat/light
+     are bound to CSS vars set by JS; transitions slowly so each new
+     analysis "stains" the iris with the model's certainty. */
+  .iris-mover { --iris-hue: 30; --iris-sat: 60%; --iris-light: 30%; }
+  .iris-tint {
+    background: radial-gradient(circle at 50% 50%,
+      hsla(var(--iris-hue), var(--iris-sat), calc(var(--iris-light) + 15%), 0.65) 0%,
+      hsla(var(--iris-hue), var(--iris-sat), var(--iris-light), 0.50) 45%,
+      hsla(var(--iris-hue), var(--iris-sat), calc(var(--iris-light) - 10%), 0.30) 80%,
+      transparent 100%);
+    mix-blend-mode: color;
+    transition: background 1s ease;
+  }
+
+  /* Layer 2 — radial fibers. The conic-gradient is built in JS with ~144
+     thin alternating sectors, blended onto the base. */
+  .iris-fibers {
+    mix-blend-mode: overlay;
+    opacity: 0.55;
+  }
+
+  /* Layer 3 — iris crypts. Sparser, higher-contrast spokes. */
+  .iris-crypts {
+    mix-blend-mode: multiply;
+    opacity: 0.45;
+  }
+
+  /* Layer 4 — collarette. A subtle ring at ~33% radius giving the iris
+     its characteristic two-zone structure (pupillary vs ciliary). */
+  .iris-collarette {
+    background: radial-gradient(circle at 50% 50%,
+      transparent 28%,
+      rgba(255, 220, 180, 0.18) 32%,
+      rgba(0, 0, 0, 0.28) 36%,
+      transparent 42%);
+    mix-blend-mode: overlay;
+  }
+
+  /* Layer 5 — limbal ring. Dark outer rim — a strong tell of healthy
+     real eyes, much imitated by tinted contact lenses. */
+  .iris-limbal {
+    background: radial-gradient(circle at 50% 50%,
+      transparent 88%,
+      rgba(0, 0, 0, 0.85) 100%);
+  }
+
+  /* Heatmap canvas — sits above iris layers, below pupil + specular.
+     Bloom animation is driven by a class swap, see .iris-heatmap.bloom. */
+  .iris-heatmap {
+    position: absolute; inset: 0;
+    border-radius: 50%;
+    opacity: 0;
+    transform: scale(0.3);
+    filter: blur(40px);
+    transition:
+      opacity 0.5s cubic-bezier(0.23, 1, 0.32, 1),
+      transform 0.6s cubic-bezier(0.23, 1, 0.32, 1),
+      filter 0.6s cubic-bezier(0.23, 1, 0.32, 1);
+    mix-blend-mode: screen;
+    pointer-events: none;
+  }
+  .iris-heatmap.bloom {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(8px);
+  }
+
+  /* Pupil — the size is animated in JS based on incoming brightness. */
+  .pupil {
+    position: absolute;
+    top: 50%; left: 50%;
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 40% 40%, #1a1a1a 0%, #000 75%);
+    transform: translate(-50%, -50%);
+    transition:
+      width 800ms cubic-bezier(0.23, 1, 0.32, 1),
+      height 800ms cubic-bezier(0.23, 1, 0.32, 1);
+    box-shadow: 0 0 6px rgba(0, 0, 0, 0.6);
+    will-change: width, height;
+  }
+
+  /* Specular highlight — small, off-center, blurred. */
+  .specular {
+    position: absolute;
+    top: 28%; left: 30%;
+    width: 22%; height: 16%;
+    background: radial-gradient(ellipse at 35% 30%,
+      rgba(255, 255, 255, 0.95) 0%,
+      rgba(255, 255, 255, 0.4) 35%,
+      rgba(255, 255, 255, 0) 70%);
+    filter: blur(2px);
+    opacity: 0.6;
+    border-radius: 50%;
+    pointer-events: none;
+  }
+  /* A second, much smaller catch-light makes the eye look damp. */
+  .specular-secondary {
+    position: absolute;
+    top: 56%; left: 60%;
+    width: 9%; height: 6%;
+    background: radial-gradient(ellipse,
+      rgba(255, 255, 255, 0.7) 0%,
+      rgba(255, 255, 255, 0) 80%);
+    filter: blur(1.5px);
+    opacity: 0.45;
+    border-radius: 50%;
+    pointer-events: none;
+  }
+
+  /* ============================================================
+     Side panels
+     ============================================================ */
+  aside.panel {
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 22px;
+    transition: border-color .15s;
+  }
+  aside.panel h3 {
+    margin: 0 0 14px 0;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: var(--fg-2);
+    font-weight: 500;
+    font-family: var(--mono);
+  }
+  aside.panel + aside.panel { margin-top: 16px; }
+
+  .drop-zone {
+    border: 1.5px dashed var(--line-2);
+    border-radius: 12px;
+    padding: 24px 16px;
+    text-align: center;
+    color: var(--fg-2);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all .2s ease;
+    background: rgba(255, 255, 255, 0.01);
+  }
+  .drop-zone:hover, .drop-zone.over {
+    border-color: var(--accent-2);
+    background: rgba(176, 140, 255, 0.05);
+    color: var(--fg-0);
+  }
+  .drop-zone .icon {
+    font-size: 24px; margin-bottom: 8px;
+  }
+
+  .samples {
+    margin-top: 14px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .sample-chip {
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 8px;
+    font-size: 12px;
+    color: var(--fg-1);
+    cursor: pointer;
+    transition: all .15s;
+    font-family: var(--mono);
+  }
+  .sample-chip:hover {
+    border-color: var(--line-2);
+    color: var(--fg-0);
+    background: var(--bg-0);
+  }
+  .sample-chip.active {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: rgba(122, 215, 255, 0.06);
+  }
+
+  textarea.prompt {
+    margin-top: 14px;
+    width: 100%;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 12px;
+    color: var(--fg-0);
+    font-family: var(--sans);
+    font-size: 13px;
+    line-height: 1.4;
+    resize: vertical;
+    min-height: 60px;
+    transition: border-color .15s;
+  }
+  textarea.prompt:focus { outline: none; border-color: var(--accent); }
+
+  .actions {
+    margin-top: 14px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .btn {
+    padding: 10px 16px;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    font-size: 13px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: all .15s ease;
+    font-family: var(--sans);
+  }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn.primary {
+    background: var(--grad);
+    color: var(--bg-0);
+    box-shadow: 0 6px 22px -10px rgba(176, 140, 255, 0.6);
+  }
+  .btn.primary:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 12px 30px -10px rgba(176, 140, 255, 0.7);
+  }
+  .btn.ghost {
+    background: var(--bg-2);
+    border-color: var(--line-2);
+    color: var(--fg-0);
+  }
+  .btn.ghost:hover:not(:disabled) { background: var(--bg-1); }
+  .btn.toggle.active {
+    background: rgba(255, 138, 211, 0.12);
+    border-color: rgba(255, 138, 211, 0.45);
+    color: var(--accent-3);
+  }
+
+  /* ============================================================
+     Telemetry
+     ============================================================ */
+  .telem {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .telem .row {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    align-items: center;
+    padding: 9px 0;
+    border-bottom: 1px dashed var(--line);
+  }
+  .telem .row:last-child { border-bottom: none; }
+  .telem .key { color: var(--fg-2); }
+  .telem .val { color: var(--fg-0); text-align: right; }
+  .telem .val.accent { color: var(--accent); }
+  .telem .val.warm   { color: var(--warm); }
+  .telem .val.green  { color: var(--green); }
+  .telem .val.hot    { color: var(--hot); }
+
+  .answer-card {
+    margin-top: 14px;
+    padding: 14px;
+    border-radius: 10px;
+    background: linear-gradient(180deg,
+      rgba(176, 140, 255, 0.08),
+      rgba(122, 215, 255, 0.04));
+    border: 1px solid rgba(176, 140, 255, 0.25);
+    font-size: 13px;
+    line-height: 1.55;
+    transition: border-color .3s ease, background .3s ease;
+  }
+  .answer-card.live { border-color: rgba(105, 232, 150, 0.45); }
+  .answer-card .lbl {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--fg-2);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .answer-card .text {
+    color: var(--fg-0);
+    font-weight: 500;
+    font-size: 14px;
+  }
+  .answer-card .meta {
+    display: flex; gap: 12px; flex-wrap: wrap;
+    margin-top: 8px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--fg-2);
+  }
+  .answer-card .meta b { color: var(--fg-0); font-weight: 500; }
+
+  .preview {
+    margin-top: 14px;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    overflow: hidden;
+    background: var(--bg-0);
+    display: none;
+  }
+  .preview.visible { display: block; }
+  .preview canvas { width: 100%; height: 100%; display: block; }
+
+  /* ============================================================
+     Scanpath replay — SVG overlay inside the iris
+     ============================================================ */
+  .iris-scanpath {
+    position: absolute; inset: 0;
+    border-radius: 50%;
+    overflow: hidden;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+  }
+  .iris-scanpath.active { opacity: 1; }
+  .iris-scanpath .scanpath-line {
+    fill: none;
+    stroke: rgba(255, 255, 255, 0.85);
+    stroke-width: 1.4;
+    stroke-linecap: round;
+    stroke-dasharray: 220;
+    stroke-dashoffset: 220;
+    filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.6));
+    transition: stroke-dashoffset 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .iris-scanpath .scanpath-dot {
+    fill: #ffffff;
+    filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.9))
+            drop-shadow(0 0 12px rgba(255, 220, 180, 0.6));
+    opacity: 0;
+    transition: opacity 0.18s ease, r 0.18s ease;
+  }
+  .iris-scanpath .scanpath-dot.lit { opacity: 1; }
+  .iris-scanpath .scanpath-dot.final {
+    fill: #fffaf0;
+    filter: drop-shadow(0 0 10px rgba(255, 255, 255, 1))
+            drop-shadow(0 0 24px rgba(176, 140, 255, 0.7));
+  }
+
+  /* ============================================================
+     Attention-flow arrows — SVG above heatmap, under specular
+     ============================================================ */
+  .iris-arrows {
+    position: absolute; inset: 0;
+    border-radius: 50%;
+    overflow: hidden;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.5s ease;
+  }
+  .iris-arrows.active { opacity: 0.7; }
+  .iris-arrows path.flow {
+    fill: none;
+    stroke: rgba(255, 240, 200, 0.7);
+    stroke-width: 1;
+    stroke-linecap: round;
+    stroke-dasharray: 60;
+    stroke-dashoffset: 60;
+    transition: stroke-dashoffset 0.6s cubic-bezier(0.5, 0, 0.2, 1);
+    filter: drop-shadow(0 0 3px rgba(255, 240, 200, 0.5));
+  }
+  .iris-arrows.active path.flow { stroke-dashoffset: 0; }
+
+  /* ============================================================
+     Neural-fiber sclera visualisation
+     ============================================================ */
+  .neural-fibers {
+    position: absolute; inset: 0;
+    pointer-events: none;
+    opacity: 0.05;
+    transition: opacity 0.6s ease;
+    mix-blend-mode: screen;
+  }
+  .neural-fibers.activity { opacity: 0.22; }
+  .neural-fibers .nf-edge {
+    fill: none;
+    stroke: rgba(122, 215, 255, 0.55);
+    stroke-width: 0.4;
+  }
+  .neural-fibers .nf-node {
+    fill: rgba(176, 140, 255, 0.65);
+    transition: r 0.3s ease, fill 0.3s ease;
+  }
+  .neural-fibers .nf-node.lit {
+    fill: rgba(255, 240, 200, 0.95);
+  }
+  /* Travelling spark — a small circle animated along an edge via JS. */
+  .neural-fibers .nf-spark {
+    fill: rgba(255, 240, 200, 0.95);
+    filter: drop-shadow(0 0 2px rgba(255, 240, 200, 0.9));
+    opacity: 0;
+  }
+  .neural-fibers .nf-spark.live { opacity: 1; }
+
+  /* ============================================================
+     Zoom-into-pupil heatmap transition
+     ============================================================ */
+  /* When the pupil is zooming in for analysis it temporarily expands to
+     fill the entire iris area, then the heatmap fades in inside it. The
+     transition is reversed when reset/deactivated. */
+  .pupil.zooming {
+    width: 100% !important;
+    height: 100% !important;
+    background: radial-gradient(circle at 50% 50%,
+      #050309 0%,
+      #08060e 60%,
+      #000000 100%);
+    box-shadow:
+      inset 0 0 32px rgba(0, 0, 0, 0.85),
+      0 0 18px rgba(0, 0, 0, 0.6);
+    transition:
+      width 600ms cubic-bezier(0.23, 1, 0.32, 1),
+      height 600ms cubic-bezier(0.23, 1, 0.32, 1),
+      background 400ms ease;
+  }
+  /* Heatmap variant that lives "inside the pupil" — same bloom, but
+     positioned with no blend mode so it reads as a scene viewed through
+     the dilated pupil. */
+  .iris-heatmap.zoom-in {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(4px);
+    mix-blend-mode: screen;
+  }
+
+  /* ============================================================
+     Confidence waveform — small scrolling canvas below the eye
+     ============================================================ */
+  .stage-wrap {
+    flex-direction: column;
+    gap: 14px;
+  }
+  .waveform-wrap {
+    width: min(620px, 100%);
+    margin: 0 auto;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: linear-gradient(180deg, var(--bg-1) 0%, var(--bg-0) 100%);
+    padding: 8px 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .waveform-wrap .lbl {
+    font-family: var(--mono); font-size: 10px; color: var(--fg-2);
+    text-transform: uppercase; letter-spacing: 0.16em;
+    flex-shrink: 0;
+  }
+  .waveform-wrap canvas {
+    flex: 1;
+    height: 36px;
+    display: block;
+  }
+
+  /* ============================================================
+     Replay button + scanpath controls
+     ============================================================ */
+  .actions .btn.replay {
+    background: rgba(122, 215, 255, 0.06);
+    border-color: rgba(122, 215, 255, 0.35);
+    color: var(--accent);
+  }
+  .actions .btn.replay:hover:not(:disabled) {
+    background: rgba(122, 215, 255, 0.12);
+  }
+
+  /* ============================================================
+     Image hover lens — magnifying glass on the preview
+     ============================================================ */
+  .preview { position: relative; cursor: none; }
+  .preview.visible { display: block; }
+  .lens {
+    position: absolute;
+    width: 96px; height: 96px;
+    border-radius: 50%;
+    border: 2px solid rgba(124, 58, 237, 0.65);
+    box-shadow:
+      0 0 24px rgba(124, 58, 237, 0.4),
+      inset 0 0 8px rgba(0, 0, 0, 0.4);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.18s ease;
+    overflow: hidden;
+    transform: translate(-50%, -50%);
+    z-index: 5;
+    backdrop-filter: brightness(1.15);
+    -webkit-backdrop-filter: brightness(1.15);
+  }
+  .lens.visible { opacity: 1; }
+  .lens canvas {
+    width: 100%; height: 100%; display: block;
+  }
+
+  /* ============================================================
+     Confidence bar
+     ============================================================ */
+  .conf-wrap {
+    height: 4px; width: 100%;
+    background: var(--bg-2);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 4px;
+  }
+  .conf-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--grad);
+    transition: width 600ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  .conf-fill.low {
+    background: linear-gradient(90deg, var(--hot), var(--warm));
+  }
+
+  /* Footer */
+  footer {
+    border-top: 1px solid var(--line);
+    padding: 32px 0 48px;
+    margin-top: 32px;
+    color: var(--fg-2);
+    font-size: 12px;
+    font-family: var(--mono);
+  }
+  footer .row { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+
+<!-- ==================== HEADER ==================== -->
+<header class="top">
+  <div class="container row">
+    <div class="brand">
+      <div class="glyph"></div>
+      Miru — The Eye
+    </div>
+    <nav>
+      <a href="index.html">← page</a>
+      <a href="https://github.com/konjoai/miru" target="_blank" rel="noopener">github</a>
+    </nav>
+    <div class="live-pill" id="live-pill">
+      <span class="dot"></span>
+      <span id="live-text">checking server…</span>
+    </div>
+  </div>
+</header>
+
+<!-- ==================== MAIN ==================== -->
+<div class="container">
+  <main>
+
+    <div class="lede">
+      <div class="eyebrow">// vision · reasoning · trace</div>
+      <h1>The eye <span class="accent">that sees</span><br/>what you give it.</h1>
+      <p>A photorealistic eye wired to a real Miru server. Drop an image — the iris dilates by its brightness, the heatmap blooms onto the focus map returned from <code>/api/analyze</code>, and the sclera reddens when the model is unsure. Compare mode splits the eye in two so you can A/B different prompts side by side.</p>
+    </div>
+
+    <!-- ===== LEFT PANEL — input ===== -->
+    <aside class="panel">
+      <h3>Image</h3>
+      <div class="drop-zone" id="drop-zone">
+        <div class="icon">⤓</div>
+        <div>drop an image here<br/><span style="opacity:.6">or pick a sample below</span></div>
+      </div>
+      <div class="samples" id="samples">
+        <button class="sample-chip" data-sample="bright">bright</button>
+        <button class="sample-chip" data-sample="dim">dim</button>
+        <button class="sample-chip" data-sample="dark">dark</button>
+        <button class="sample-chip" data-sample="chart">chart</button>
+      </div>
+      <textarea class="prompt" id="prompt-1" rows="2">What is the dominant subject of this image?</textarea>
+      <div class="actions">
+        <button class="btn primary" id="btn-see">See</button>
+        <button class="btn replay" id="btn-replay" disabled>Replay scan</button>
+        <button class="btn ghost" id="btn-blink">Blink</button>
+        <button class="btn ghost toggle" id="btn-compare">Compare</button>
+      </div>
+
+      <div class="preview" id="preview">
+        <canvas id="preview-canvas" width="256" height="256"></canvas>
+        <div class="lens" id="lens">
+          <canvas id="lens-canvas" width="96" height="96"></canvas>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ===== CENTER — the eye(s) ===== -->
+    <div class="stage-wrap">
+      <div class="eye-stage" id="stage">
+        <!-- Eye 1 — built by JS, see #eye-template -->
+      </div>
+      <div class="waveform-wrap">
+        <div class="lbl">certainty</div>
+        <canvas id="conf-waveform" width="600" height="36"></canvas>
+      </div>
+    </div>
+
+    <!-- ===== RIGHT PANEL — output ===== -->
+    <aside class="panel">
+      <h3>Live telemetry</h3>
+      <div class="telem" id="telem">
+        <div class="row"><div class="key">brightness</div><div class="val" data-k="brightness">—</div></div>
+        <div class="row"><div class="key">pupil ⌀</div><div class="val accent" data-k="pupil">22 px</div></div>
+        <div class="row"><div class="key">saccades</div><div class="val" data-k="saccades">0</div></div>
+        <div class="row"><div class="key">blinks</div><div class="val" data-k="blinks">0</div></div>
+        <div class="row"><div class="key">confidence</div>
+          <div class="val green" data-k="confidence">—
+            <div class="conf-wrap"><div class="conf-fill" id="conf-fill"></div></div>
+          </div>
+        </div>
+        <div class="row"><div class="key">latency</div><div class="val warm" data-k="latency">—</div></div>
+        <div class="row"><div class="key">backend</div><div class="val accent" data-k="backend">—</div></div>
+        <div class="row"><div class="key">mode</div><div class="val" data-k="mode">single eye</div></div>
+      </div>
+
+      <div class="answer-card" id="answer-card" style="display:none">
+        <div class="lbl">answer</div>
+        <div class="text" id="answer-text">—</div>
+        <div class="meta" id="answer-meta"></div>
+      </div>
+    </aside>
+
+  </main>
+</div>
+
+<footer class="container">
+  <div class="row">
+    <div>Miru — visual demo · ቆንጆ · 根性 · 康宙 · কুঞ্জ</div>
+    <div>BUSL-1.1 · drop an image, or just watch it blink</div>
+  </div>
+</footer>
+
+<!-- ==================== EYE TEMPLATE ==================== -->
+<template id="eye-template">
+  <div class="eye-rig">
+    <div class="eye-socket"></div>
+    <div class="eye">
+      <div class="sclera"></div>
+      <div class="neural-fibers"></div>
+      <div class="veins"></div>
+      <div class="iris-wrap">
+        <div class="iris-mover">
+          <div class="iris-layer iris-base"></div>
+          <div class="iris-layer iris-tint"></div>
+          <div class="iris-layer iris-fibers"></div>
+          <div class="iris-layer iris-crypts"></div>
+          <div class="iris-layer iris-collarette"></div>
+          <canvas class="iris-heatmap" width="220" height="220"></canvas>
+          <svg class="iris-arrows" viewBox="0 0 100 100" preserveAspectRatio="none">
+            <defs>
+              <marker id="arrowhead" viewBox="0 0 10 10" refX="8" refY="5"
+                      markerWidth="4" markerHeight="4" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(255, 240, 200, 0.85)"/>
+              </marker>
+            </defs>
+          </svg>
+          <svg class="iris-scanpath" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
+          <div class="pupil"></div>
+          <div class="specular"></div>
+          <div class="specular-secondary"></div>
+          <div class="iris-layer iris-limbal"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script>
+"use strict";
+
+/* ============================================================
+   Configuration
+   ============================================================ */
+const CONFIG = {
+  apiBase: "",            // same-origin; demo/server.py answers /api/*
+  saccadeMin: 3000,       // ms
+  saccadeMax: 5500,
+  saccadeRange: 3,        // px — translate magnitude
+  blinkMin: 4200,
+  blinkMax: 6800,
+  pupilMin: 12,           // px — fully bright
+  pupilMax: 36,           // px — fully dark
+  pupilDefault: 22,
+  attnGridSize: 16,
+};
+
+/* ============================================================
+   Programmatic iris layers — generated once at init so each eye
+   has a unique fibre/crypt pattern (no two real irises match).
+   ============================================================ */
+
+function rand(seed) {
+  // Mulberry32 — small deterministic PRNG so each eye is reproducible.
+  let s = seed >>> 0;
+  return function () {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function buildIrisFibers(seed) {
+  // 144 sectors at 2.5° each, alternating warm-light and cool-dark.
+  const r = rand(seed);
+  const N = 144;
+  const stops = [];
+  for (let i = 0; i < N; i++) {
+    const deg0 = (i / N) * 360;
+    const deg1 = ((i + 1) / N) * 360;
+    const isLight = i % 2 === 0;
+    const a = isLight
+      ? 0.10 + r() * 0.10
+      : 0.12 + r() * 0.12;
+    const c = isLight
+      ? `rgba(255, 220, 180, ${a.toFixed(3)})`
+      : `rgba(40, 20, 0, ${a.toFixed(3)})`;
+    stops.push(`${c} ${deg0.toFixed(2)}deg ${deg1.toFixed(2)}deg`);
+  }
+  return `conic-gradient(from 0deg at 50% 50%, ${stops.join(", ")})`;
+}
+
+function buildIrisCrypts(seed) {
+  // Sparser, higher-contrast spokes — only a fraction of sectors are
+  // visible, the rest are transparent.
+  const r = rand(seed + 9001);
+  const N = 220;
+  const stops = [];
+  for (let i = 0; i < N; i++) {
+    const deg0 = (i / N) * 360;
+    const deg1 = ((i + 1) / N) * 360;
+    const visible = r() < 0.35;
+    const a = visible ? 0.10 + r() * 0.30 : 0;
+    const dark = r() < 0.7;
+    const c = visible
+      ? (dark ? `rgba(0, 0, 0, ${a.toFixed(3)})`
+              : `rgba(255, 200, 130, ${(a * 0.7).toFixed(3)})`)
+      : "rgba(0, 0, 0, 0)";
+    stops.push(`${c} ${deg0.toFixed(2)}deg ${deg1.toFixed(2)}deg`);
+  }
+  return `conic-gradient(from 0deg at 50% 50%, ${stops.join(", ")})`;
+}
+
+/* ============================================================
+   Sclera vein generation — branching SVG paths.
+   ============================================================ */
+
+function buildVeinsSVG(seed) {
+  const r = rand(seed + 13);
+  const W = 100, H = 60;
+  // Start positions along the left + right edges of the sclera (where
+  // the conjunctiva meets the limbus). Each vein walks inward, tapers,
+  // and possibly branches once.
+  const sides = [
+    { sx: 1,  sy: 30, dir:  1 },
+    { sx: 1,  sy: 18, dir:  1 },
+    { sx: 99, sy: 38, dir: -1 },
+    { sx: 99, sy: 50, dir: -1 },
+    { sx: 99, sy: 16, dir: -1 },
+  ];
+  let paths = "";
+  for (const s of sides) {
+    paths += renderVein(s.sx, s.sy, s.dir, r, 5);
+    if (r() < 0.55) paths += renderVein(s.sx, s.sy + (r() * 6 - 3), s.dir, r, 3);
+  }
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${paths}</svg>`;
+}
+
+/* ============================================================
+   Neural-fiber sclera SVG — a sparse node-and-edge graph that lights
+   up under model activity. Generated once per eye.
+   ============================================================ */
+
+function buildNeuralFibersSVG(seed) {
+  const r = rand(seed + 5021);
+  const W = 100, H = 60;
+  const N_NODES = 14;
+  // Sample nodes in two bands — left and right of the iris — so the
+  // sclera reads as flanking the iris rather than overlapping it.
+  const nodes = [];
+  for (let i = 0; i < N_NODES; i++) {
+    const onLeft = i < N_NODES / 2;
+    const x = onLeft ? 4 + r() * 26 : 70 + r() * 26;
+    const y = 6 + r() * (H - 12);
+    nodes.push({ x, y, id: i });
+  }
+  // Edges — each node connects to its 1-2 nearest neighbours on the same side.
+  const edges = [];
+  for (let i = 0; i < N_NODES; i++) {
+    const a = nodes[i];
+    const sameSide = nodes.filter((b, j) => j !== i && Math.sign(b.x - 50) === Math.sign(a.x - 50));
+    sameSide.sort((p, q) => dist2(a, p) - dist2(a, q));
+    const connect = sameSide.slice(0, 1 + Math.floor(r() * 2));
+    for (const b of connect) {
+      const key = i < b.id ? `${i}-${b.id}` : `${b.id}-${i}`;
+      if (!edges.find(e => e.key === key)) {
+        edges.push({ a, b, key });
+      }
+    }
+  }
+
+  let edgeMarkup = "";
+  for (const e of edges) {
+    // Subtle curve via quadratic midpoint offset.
+    const mx = (e.a.x + e.b.x) / 2 + (r() - 0.5) * 4;
+    const my = (e.a.y + e.b.y) / 2 + (r() - 0.5) * 3;
+    edgeMarkup += `<path class="nf-edge" data-edge="${e.key}" d="M ${e.a.x.toFixed(2)} ${e.a.y.toFixed(2)} Q ${mx.toFixed(2)} ${my.toFixed(2)} ${e.b.x.toFixed(2)} ${e.b.y.toFixed(2)}"/>`;
+  }
+  let nodeMarkup = "";
+  for (const n of nodes) {
+    nodeMarkup += `<circle class="nf-node" data-node="${n.id}" cx="${n.x.toFixed(2)}" cy="${n.y.toFixed(2)}" r="0.7"/>`;
+  }
+  // Reserve a single spark per side that animates along edges on demand.
+  const sparkMarkup = `<circle class="nf-spark" data-spark="L" cx="0" cy="0" r="0.6"/><circle class="nf-spark" data-spark="R" cx="0" cy="0" r="0.6"/>`;
+
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" width="100%" height="100%">${edgeMarkup}${nodeMarkup}${sparkMarkup}</svg>`;
+}
+
+function dist2(a, b) {
+  const dx = a.x - b.x, dy = a.y - b.y;
+  return dx * dx + dy * dy;
+}
+
+function renderVein(x0, y0, dir, r, depth) {
+  if (depth <= 0) return "";
+  const length = 22 + r() * 14;
+  const x1 = x0 + dir * length;
+  const y1 = y0 + (r() - 0.5) * 8;
+  // Quadratic curve — control point off the midpoint for an organic kink.
+  const cx = (x0 + x1) / 2 + (r() - 0.5) * 12;
+  const cy = (y0 + y1) / 2 + (r() - 0.5) * 6;
+  const w = 0.55 - (5 - depth) * 0.08;
+  const main = `<path d="M ${x0.toFixed(2)} ${y0.toFixed(2)} Q ${cx.toFixed(2)} ${cy.toFixed(2)} ${x1.toFixed(2)} ${y1.toFixed(2)}" stroke="#b62a3a" stroke-width="${w.toFixed(3)}" fill="none" stroke-linecap="round" />`;
+  let branch = "";
+  if (r() < 0.45 && depth > 1) {
+    const bx = (x0 + x1) / 2;
+    const by = (y0 + y1) / 2;
+    branch = renderVein(bx, by, dir, r, depth - 2);
+  }
+  return main + branch;
+}
+
+/* ============================================================
+   The Eye class — owns one eye-rig and all its behaviours.
+   ============================================================ */
+
+class Eye {
+  constructor(seed = 1) {
+    this.seed = seed;
+    const tpl = document.getElementById("eye-template");
+    this.root = tpl.content.firstElementChild.cloneNode(true);
+    this.eye = this.root.querySelector(".eye");
+    this.sclera = this.root.querySelector(".sclera");
+    this.veins = this.root.querySelector(".veins");
+    this.irisMover = this.root.querySelector(".iris-mover");
+    this.fibers = this.root.querySelector(".iris-fibers");
+    this.crypts = this.root.querySelector(".iris-crypts");
+    this.heatmap = this.root.querySelector(".iris-heatmap");
+    this.pupil = this.root.querySelector(".pupil");
+    this.scanpath = this.root.querySelector(".iris-scanpath");
+    this.arrows = this.root.querySelector(".iris-arrows");
+    this.neural = this.root.querySelector(".neural-fibers");
+
+    // Apply the generated layers — each eye unique by seed.
+    this.fibers.style.background = buildIrisFibers(seed);
+    this.crypts.style.background = buildIrisCrypts(seed);
+    this.veins.innerHTML = buildVeinsSVG(seed);
+    this.neural.innerHTML = buildNeuralFibersSVG(seed);
+
+    this.pupilSize = CONFIG.pupilDefault;
+    this._naturalPupil = CONFIG.pupilDefault;
+    this._setPupil(this.pupilSize);
+    this._lastScanpath = null;
+    this._scanpathTimers = [];
+    this._neuralPulseTimers = [];
+    this._arrowsTimer = null;
+
+    this.saccades = 0;
+    this.blinks = 0;
+    this.confidence = null;
+    this.uncertainty = 0;
+
+    // schedule life
+    this._timers = [];
+    this._scheduleSaccade();
+    this._scheduleBlink();
+  }
+
+  /* ----- lifecycle scheduling ------------------------------------ */
+
+  _scheduleSaccade() {
+    const t = CONFIG.saccadeMin + Math.random() * (CONFIG.saccadeMax - CONFIG.saccadeMin);
+    const id = setTimeout(() => this._saccade(), t);
+    this._timers.push(id);
+  }
+
+  _scheduleBlink() {
+    const t = CONFIG.blinkMin + Math.random() * (CONFIG.blinkMax - CONFIG.blinkMin);
+    const id = setTimeout(() => this.blink(), t);
+    this._timers.push(id);
+  }
+
+  _saccade() {
+    const dx = (Math.random() - 0.5) * 2 * CONFIG.saccadeRange;
+    const dy = (Math.random() - 0.5) * 2 * CONFIG.saccadeRange;
+    this.irisMover.style.transition = "transform 80ms ease-in";
+    this.irisMover.style.transform = `translate(${dx.toFixed(2)}px, ${dy.toFixed(2)}px)`;
+    setTimeout(() => {
+      this.irisMover.style.transition = "transform 200ms cubic-bezier(0.5, 0, 0.5, 1)";
+      this.irisMover.style.transform = "translate(0, 0)";
+    }, 90);
+    this.saccades++;
+    this._scheduleSaccade();
+    if (this.onTelemetry) this.onTelemetry();
+  }
+
+  blink() {
+    // The blink keyframe is constructed inline so we can control timing
+    // per-blink. Single clip-path with asymmetric upper/lower travel:
+    // upper goes 0→50% in 35% of duration (fast), lower goes 0→50% in
+    // 45% of duration (slower). Reverse on the way out.
+    const total = 280;
+    const animation = this.eye.animate(
+      [
+        { clipPath: "inset(0% 0 0% 0)",   offset: 0.00 },
+        { clipPath: "inset(45% 0 30% 0)", offset: 0.35 },
+        { clipPath: "inset(50% 0 50% 0)", offset: 0.50 },
+        { clipPath: "inset(45% 0 30% 0)", offset: 0.65 },
+        { clipPath: "inset(0% 0 0% 0)",   offset: 1.00 },
+      ],
+      { duration: total, easing: "cubic-bezier(0.4, 0, 0.6, 1)" }
+    );
+    this.blinks++;
+    this._scheduleBlink();
+    if (this.onTelemetry) this.onTelemetry();
+    return animation.finished;
+  }
+
+  /* ----- pupil dilation ------------------------------------------ */
+
+  setPupilFromBrightness(brightness) {
+    // brightness ∈ [0, 1] — bright = small pupil.
+    const b = Math.max(0, Math.min(1, brightness));
+    const size = CONFIG.pupilMax - (CONFIG.pupilMax - CONFIG.pupilMin) * b;
+    this.pupilSize = size;
+    this._naturalPupil = size;
+    if (!this.pupil.classList.contains("zooming")) this._setPupil(size);
+  }
+
+  _setPupil(px) {
+    this.pupil.style.width = px.toFixed(1) + "px";
+    this.pupil.style.height = px.toFixed(1) + "px";
+  }
+
+  /* ----- heatmap fluid bloom ------------------------------------- */
+
+  renderHeatmap(grid, focal = null) {
+    const ctx = this.heatmap.getContext("2d");
+    const W = this.heatmap.width, H = this.heatmap.height;
+    const Gh = grid.length, Gw = grid[0].length;
+    let maxV = 0;
+    for (const row of grid) for (const v of row) if (v > maxV) maxV = v;
+    if (maxV <= 0) maxV = 1;
+
+    const img = ctx.createImageData(W, H);
+    const cx = W / 2, cy = H / 2, R = W / 2;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const dx = x - cx, dy = y - cy;
+        const inside = (dx * dx + dy * dy) <= R * R;
+        const i = (y * W + x) * 4;
+        if (!inside) { img.data[i + 3] = 0; continue; }
+        // Bilinear sample of the attention grid, then map to a hot palette.
+        const fx = (x / W) * (Gw - 1);
+        const fy = (y / H) * (Gh - 1);
+        const x0 = Math.floor(fx), x1 = Math.min(Gw - 1, x0 + 1);
+        const y0 = Math.floor(fy), y1 = Math.min(Gh - 1, y0 + 1);
+        const tx = fx - x0, ty = fy - y0;
+        const v00 = grid[y0][x0], v01 = grid[y0][x1];
+        const v10 = grid[y1][x0], v11 = grid[y1][x1];
+        const top = v00 * (1 - tx) + v01 * tx;
+        const bot = v10 * (1 - tx) + v11 * tx;
+        const w = (top * (1 - ty) + bot * ty) / maxV;
+
+        // Glowing hot palette: dark purple → magenta → orange → yellow-white.
+        const r = clamp255(40 + w * 240);
+        const g = clamp255(20 + w * w * 200);
+        const b = clamp255(180 - w * 160 + (1 - w) * 60);
+        img.data[i]     = r;
+        img.data[i + 1] = g;
+        img.data[i + 2] = b;
+        img.data[i + 3] = clamp255(w * 230);
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+
+    // Set the bloom origin so the heatmap visually expands from the
+    // focal point of attention.
+    if (focal) {
+      const ox = (focal.col / Gw) * 100;
+      const oy = (focal.row / Gh) * 100;
+      this.heatmap.style.transformOrigin = `${ox}% ${oy}%`;
+    } else {
+      this.heatmap.style.transformOrigin = "50% 50%";
+    }
+    // Restart the bloom animation by removing + re-adding the class.
+    this.heatmap.classList.remove("bloom");
+    void this.heatmap.offsetWidth;   // force reflow
+    requestAnimationFrame(() => this.heatmap.classList.add("bloom"));
+  }
+
+  clearHeatmap() {
+    this.heatmap.classList.remove("bloom");
+    const ctx = this.heatmap.getContext("2d");
+    ctx.clearRect(0, 0, this.heatmap.width, this.heatmap.height);
+  }
+
+  /* ----- confidence → sclera redness ----------------------------- */
+
+  setConfidence(confidence) {
+    this.confidence = confidence;
+    // Map confidence ∈ [0, 1] to uncertainty redness ∈ [0.18, 0]
+    // (low confidence ⇒ visible red, high ⇒ none).
+    const c = Math.max(0, Math.min(1, confidence));
+    this.uncertainty = 0.18 * (1 - c);
+    this.sclera.style.setProperty("--uncertainty", this.uncertainty.toFixed(3));
+    // Slightly intensify veins under uncertainty too.
+    this.veins.style.opacity = (0.4 + 0.4 * (1 - c)).toFixed(3);
+    // Shift the iris tint by confidence: high → deep cool blue-violet,
+    // medium → warm amber-brown, low → murky green-grey.
+    this._applyIrisTint(c);
+  }
+
+  _applyIrisTint(c) {
+    // Three anchor stops; smoothly interpolate hue/sat/light between them.
+    // high:   hsl(240, 70%, 35%)   c >= 0.8
+    // medium: hsl(30,  60%, 30%)   c ~= 0.65
+    // low:    hsl(120, 20%, 25%)   c <= 0.5
+    let h, s, l;
+    if (c >= 0.8) {
+      // 0.8 .. 1.0 → 30°→240° hue, 60%→70% sat, 30%→35% light
+      const t = (c - 0.8) / 0.2;
+      h = 30 + t * (240 - 30);
+      s = 60 + t * 10;
+      l = 30 + t * 5;
+    } else if (c >= 0.5) {
+      // 0.5 .. 0.8 → 120°→30° hue, 20%→60% sat, 25%→30% light
+      const t = (c - 0.5) / 0.3;
+      h = 120 - t * (120 - 30);
+      s = 20 + t * 40;
+      l = 25 + t * 5;
+    } else {
+      // 0.0 .. 0.5 → stay at low anchor
+      h = 120;
+      s = 20;
+      l = 25;
+    }
+    this.irisMover.style.setProperty("--iris-hue", h.toFixed(1));
+    this.irisMover.style.setProperty("--iris-sat", s.toFixed(1) + "%");
+    this.irisMover.style.setProperty("--iris-light", l.toFixed(1) + "%");
+    // Cache the hue for the waveform stroke too.
+    this.currentHue = h;
+  }
+
+  /* ----- zoom-into-pupil heatmap transition ---------------------- */
+
+  zoomPupilIn() {
+    // Pupil swells to fill the iris area; the heatmap then fades in
+    // "behind" the dilated pupil, reading as a glimpse through the eye.
+    this.pupil.classList.add("zooming");
+  }
+
+  zoomPupilOut() {
+    this.pupil.classList.remove("zooming");
+    // Restore natural brightness-driven size.
+    this._setPupil(this._naturalPupil);
+    this.heatmap.classList.remove("zoom-in");
+  }
+
+  /* ----- attention-flow arrows ----------------------------------- */
+
+  showAttentionArrows(grid, focal) {
+    // Pick a handful of high-attention cells, draw curved arrows from each
+    // toward the focal point. Coordinates are in the iris SVG (0-100).
+    const G = grid.length;
+    const flat = [];
+    for (let i = 0; i < G; i++) {
+      for (let j = 0; j < G; j++) flat.push({ i, j, v: grid[i][j] });
+    }
+    flat.sort((a, b) => b.v - a.v);
+    const TOP = flat.slice(0, 5);
+    const fy = ((focal.row + 0.5) / G) * 100;
+    const fx = ((focal.col + 0.5) / G) * 100;
+
+    // Wipe existing flow paths (defs stays).
+    this.arrows.querySelectorAll("path.flow").forEach(p => p.remove());
+
+    for (const c of TOP) {
+      const py = ((c.i + 0.5) / G) * 100;
+      const px = ((c.j + 0.5) / G) * 100;
+      // Skip the focal cell itself.
+      if (Math.hypot(py - fy, px - fx) < 4) continue;
+      // Skip points outside the circular iris (we draw inside a 50%-radius circle).
+      if (Math.hypot(py - 50, px - 50) > 44) continue;
+      // Quadratic control point — bowed perpendicular to the line for a curve.
+      const mx = (px + fx) / 2 + (fy - py) * 0.15;
+      const my = (py + fy) / 2 + (px - fx) * 0.15;
+      const ns = "http://www.w3.org/2000/svg";
+      const p = document.createElementNS(ns, "path");
+      p.setAttribute("class", "flow");
+      p.setAttribute("d", `M ${px.toFixed(2)} ${py.toFixed(2)} Q ${mx.toFixed(2)} ${my.toFixed(2)} ${fx.toFixed(2)} ${fy.toFixed(2)}`);
+      p.setAttribute("marker-end", "url(#arrowhead)");
+      this.arrows.appendChild(p);
+    }
+
+    requestAnimationFrame(() => this.arrows.classList.add("active"));
+
+    if (this._arrowsTimer) clearTimeout(this._arrowsTimer);
+    this._arrowsTimer = setTimeout(() => {
+      this.arrows.classList.remove("active");
+    }, 2000);
+  }
+
+  /* ----- attention scanpath replay ------------------------------- */
+
+  computeScanpath(grid) {
+    // Pick 5 highest cells with a minimum spatial separation so the path
+    // jumps between distinct regions instead of clustering on one peak.
+    const G = grid.length;
+    const flat = [];
+    for (let i = 0; i < G; i++) {
+      for (let j = 0; j < G; j++) flat.push({ i, j, v: grid[i][j] });
+    }
+    flat.sort((a, b) => b.v - a.v);
+    const minDist = Math.max(2, G / 6);
+    const picked = [];
+    for (const c of flat) {
+      if (picked.every(p => Math.hypot(p.i - c.i, p.j - c.j) >= minDist)) {
+        picked.push(c);
+        if (picked.length >= 5) break;
+      }
+    }
+    // Project to %-coords inside the iris SVG and clip to the circular area.
+    const points = picked.map(c => {
+      let y = ((c.i + 0.5) / G) * 100;
+      let x = ((c.j + 0.5) / G) * 100;
+      // Pull toward centre if outside the visible iris disc.
+      const r = Math.hypot(y - 50, x - 50);
+      if (r > 44) {
+        const t = 44 / r;
+        x = 50 + (x - 50) * t;
+        y = 50 + (y - 50) * t;
+      }
+      return { x, y, v: c.v };
+    });
+    return points;
+  }
+
+  playScanpath(grid) {
+    const points = grid ? this.computeScanpath(grid)
+                        : this._lastScanpath;
+    if (!points || points.length < 2) return;
+    this._lastScanpath = points;
+
+    // Clear timers from any prior replay.
+    for (const id of this._scanpathTimers) clearTimeout(id);
+    this._scanpathTimers = [];
+
+    // Build the SVG: a single connecting path + one dot per fixation.
+    const ns = "http://www.w3.org/2000/svg";
+    // Wipe previous contents.
+    while (this.scanpath.firstChild) this.scanpath.firstChild.remove();
+    this.scanpath.classList.remove("active");
+
+    // Smooth path with a quadratic-through-midpoints scheme.
+    let d = `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`;
+    for (let i = 1; i < points.length; i++) {
+      const prev = points[i - 1], cur = points[i];
+      const mx = (prev.x + cur.x) / 2;
+      const my = (prev.y + cur.y) / 2;
+      d += ` Q ${prev.x.toFixed(2)} ${prev.y.toFixed(2)} ${mx.toFixed(2)} ${my.toFixed(2)}`;
+    }
+    const last = points[points.length - 1];
+    d += ` T ${last.x.toFixed(2)} ${last.y.toFixed(2)}`;
+
+    const line = document.createElementNS(ns, "path");
+    line.setAttribute("class", "scanpath-line");
+    line.setAttribute("d", d);
+    this.scanpath.appendChild(line);
+
+    // Add the dots — invisible to start.
+    const dots = points.map((p, i) => {
+      const c = document.createElementNS(ns, "circle");
+      c.setAttribute("class", "scanpath-dot" + (i === points.length - 1 ? " final" : ""));
+      c.setAttribute("cx", p.x.toFixed(2));
+      c.setAttribute("cy", p.y.toFixed(2));
+      c.setAttribute("r", (i === points.length - 1 ? 2.2 : 1.6));
+      this.scanpath.appendChild(c);
+      return c;
+    });
+
+    // Activate the layer + measure the path total length for the draw animation.
+    requestAnimationFrame(() => {
+      this.scanpath.classList.add("active");
+      const total = line.getTotalLength();
+      line.style.strokeDasharray = total.toFixed(1);
+      line.style.strokeDashoffset = total.toFixed(1);
+      // Force reflow then drain to 0 — duration scaled to dot count.
+      // (Browsers apply transition only after a value change is committed.)
+      void line.getBoundingClientRect();
+      line.style.transition = `stroke-dashoffset ${ (points.length * 350).toFixed(0) }ms cubic-bezier(0.4, 0, 0.2, 1)`;
+      line.style.strokeDashoffset = "0";
+    });
+
+    // Reveal dots in sequence; each lights for 400ms then fades.
+    const SPACE = 380;
+    for (let i = 0; i < dots.length; i++) {
+      const onTimer = setTimeout(() => dots[i].classList.add("lit"), 250 + i * SPACE);
+      this._scanpathTimers.push(onTimer);
+      if (i !== dots.length - 1) {
+        const offTimer = setTimeout(() => dots[i].classList.remove("lit"), 250 + i * SPACE + 480);
+        this._scanpathTimers.push(offTimer);
+      }
+    }
+  }
+
+  /* ----- neural-fibre activity pulse ------------------------------ */
+
+  pulseNeural(grid) {
+    // Light a subset of nodes proportional to attention magnitude, and
+    // animate a spark along one random edge per side.
+    this.neural.classList.add("activity");
+    const nodes = Array.from(this.neural.querySelectorAll(".nf-node"));
+    nodes.forEach(n => n.classList.remove("lit"));
+    // Light ~half of the nodes weighted by overall attention magnitude.
+    const G = grid.length;
+    const meanV = grid.flat().reduce((a, b) => a + b, 0) / (G * G);
+    const lightCount = Math.max(3, Math.min(nodes.length, Math.round(meanV * nodes.length * 1.8)));
+    const pool = nodes.slice().sort(() => Math.random() - 0.5);
+    for (let i = 0; i < lightCount; i++) {
+      const n = pool[i];
+      n.classList.add("lit");
+      const r = (1.0 + Math.random() * 0.6).toFixed(2);
+      n.setAttribute("r", r);
+    }
+
+    // Cancel any prior spark timers.
+    for (const id of this._neuralPulseTimers) clearTimeout(id);
+    this._neuralPulseTimers = [];
+
+    // Animate sparks along edges (one per side, three rounds).
+    const edges = Array.from(this.neural.querySelectorAll(".nf-edge"));
+    const sparks = Array.from(this.neural.querySelectorAll(".nf-spark"));
+    for (let round = 0; round < 3; round++) {
+      const t = setTimeout(() => {
+        sparks.forEach(sp => {
+          const candidate = edges[Math.floor(Math.random() * edges.length)];
+          if (!candidate) return;
+          this._animateSpark(sp, candidate, 800);
+        });
+      }, round * 950);
+      this._neuralPulseTimers.push(t);
+    }
+
+    // Settle back to dim baseline after a while.
+    const settle = setTimeout(() => {
+      this.neural.classList.remove("activity");
+      nodes.forEach(n => { n.classList.remove("lit"); n.setAttribute("r", "0.7"); });
+    }, 4200);
+    this._neuralPulseTimers.push(settle);
+  }
+
+  _animateSpark(sparkEl, pathEl, duration) {
+    const total = pathEl.getTotalLength();
+    const t0 = performance.now();
+    sparkEl.classList.add("live");
+    const step = (now) => {
+      const t = Math.min(1, (now - t0) / duration);
+      const pt = pathEl.getPointAtLength(t * total);
+      sparkEl.setAttribute("cx", pt.x.toFixed(2));
+      sparkEl.setAttribute("cy", pt.y.toFixed(2));
+      if (t < 1) requestAnimationFrame(step);
+      else sparkEl.classList.remove("live");
+    };
+    requestAnimationFrame(step);
+  }
+
+  /* ----- clear all per-analysis overlays ------------------------- */
+
+  clearOverlays() {
+    this.scanpath.classList.remove("active");
+    while (this.scanpath.firstChild) this.scanpath.firstChild.remove();
+    this.arrows.classList.remove("active");
+    this.arrows.querySelectorAll("path.flow").forEach(p => p.remove());
+    for (const id of this._scanpathTimers) clearTimeout(id);
+    this._scanpathTimers = [];
+    if (this._arrowsTimer) { clearTimeout(this._arrowsTimer); this._arrowsTimer = null; }
+  }
+
+  /* ----- destructor ---------------------------------------------- */
+
+  dispose() {
+    for (const id of this._timers) clearTimeout(id);
+    for (const id of this._scanpathTimers) clearTimeout(id);
+    for (const id of this._neuralPulseTimers) clearTimeout(id);
+    if (this._arrowsTimer) clearTimeout(this._arrowsTimer);
+    this._timers = [];
+    this._scanpathTimers = [];
+    this._neuralPulseTimers = [];
+  }
+}
+
+/* ============================================================
+   ConfidenceWaveform — scrolling certainty line below the eye.
+   High confidence ⇒ smooth low-amplitude sine.
+   Low confidence  ⇒ noisy high-amplitude bumps.
+   StrokeStyle tracks the active iris hue.
+   ============================================================ */
+
+class ConfidenceWaveform {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext("2d");
+    this._phase = 0;
+    this._noiseSeed = 1.0;
+    // History buffer — one sample per column.
+    this.W = 0; this.H = 0;
+    this._resize();
+    this.history = new Float32Array(this.W);
+    this.confidence = 0.5;
+    this.hue = 30;
+    this._tick = this._tick.bind(this);
+    window.addEventListener("resize", () => this._resize());
+    requestAnimationFrame(this._tick);
+  }
+
+  _resize() {
+    const r = this.canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    this.W = Math.max(1, Math.floor(r.width * dpr));
+    this.H = Math.max(1, Math.floor(r.height * dpr));
+    this.canvas.width = this.W;
+    this.canvas.height = this.H;
+    this.history = new Float32Array(this.W);
+  }
+
+  setConfidence(c) {
+    this.confidence = Math.max(0, Math.min(1, c));
+  }
+
+  setHue(h) { this.hue = h; }
+
+  _sample() {
+    // Pure sine component shrinks as confidence rises (less wobble),
+    // noise component shrinks as confidence rises (less jitter).
+    const c = this.confidence;
+    const amplitude = 0.10 + (1 - c) * 0.55;
+    const noiseAmp  = (1 - c) * 0.45;
+    const freq = 0.08 + (1 - c) * 0.04;
+    const sine = Math.sin(this._phase) * amplitude;
+    const noise = (this._whiteNoise() * 2 - 1) * noiseAmp;
+    this._phase += freq;
+    return sine + noise;
+  }
+
+  _whiteNoise() {
+    // Cheap LCG so a low-amplitude path still looks "alive" without
+    // pulling in a real RNG.
+    this._noiseSeed = (this._noiseSeed * 9301 + 49297) % 233280;
+    return this._noiseSeed / 233280;
+  }
+
+  _tick(now) {
+    // Scroll left by 1px: shift history, push new sample at right edge.
+    for (let i = 0; i < this.W - 1; i++) this.history[i] = this.history[i + 1];
+    this.history[this.W - 1] = this._sample();
+
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, this.W, this.H);
+
+    // Faint baseline
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.06)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, this.H / 2);
+    ctx.lineTo(this.W, this.H / 2);
+    ctx.stroke();
+
+    // Waveform — colour tracks current iris hue, opacity tracks confidence.
+    const c = this.confidence;
+    const alpha = 0.45 + 0.45 * c;
+    ctx.strokeStyle = `hsla(${this.hue}, 70%, ${50 + c * 15}%, ${alpha})`;
+    ctx.lineWidth = Math.max(1, Math.round(this.H / 18));
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    const mid = this.H / 2;
+    const yScale = this.H * 0.42;
+    for (let x = 0; x < this.W; x++) {
+      const y = mid - this.history[x] * yScale;
+      if (x === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // Soft glow trail — second pass blurred
+    ctx.globalAlpha = 0.35;
+    ctx.shadowColor = `hsla(${this.hue}, 80%, 60%, ${alpha})`;
+    ctx.shadowBlur = 6;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+
+    requestAnimationFrame(this._tick);
+  }
+}
+
+/* ============================================================
+   Lens — magnifying-glass overlay on the preview canvas.
+   2× zoom at cursor; cursor-follow uses lerp for smoothness.
+   ============================================================ */
+
+class Lens {
+  constructor(previewEl, sourceCanvas, lensEl, lensCanvas) {
+    this.preview = previewEl;
+    this.source = sourceCanvas;
+    this.lens = lensEl;
+    this.canvas = lensCanvas;
+    this.ctx = lensCanvas.getContext("2d");
+    this.lensSize = 96;
+    this.zoom = 2.0;
+    this.targetX = 0; this.targetY = 0;
+    this.x = 0; this.y = 0;
+    this.active = false;
+
+    previewEl.addEventListener("mouseenter", () => this._enter());
+    previewEl.addEventListener("mouseleave", () => this._leave());
+    previewEl.addEventListener("mousemove", (e) => this._move(e));
+    this._tick = this._tick.bind(this);
+    requestAnimationFrame(this._tick);
+  }
+
+  _enter() {
+    if (!this.preview.classList.contains("visible")) return;
+    this.active = true;
+    this.lens.classList.add("visible");
+  }
+  _leave() {
+    this.active = false;
+    this.lens.classList.remove("visible");
+  }
+
+  _move(e) {
+    const r = this.preview.getBoundingClientRect();
+    this.targetX = e.clientX - r.left;
+    this.targetY = e.clientY - r.top;
+    if (this.active) this.lens.style.opacity = "1";
+  }
+
+  _tick() {
+    if (this.active) {
+      // Lerp toward target → silky follow.
+      this.x += (this.targetX - this.x) * 0.25;
+      this.y += (this.targetY - this.y) * 0.25;
+      this.lens.style.left = this.x.toFixed(1) + "px";
+      this.lens.style.top  = this.y.toFixed(1) + "px";
+      this._render();
+    }
+    requestAnimationFrame(this._tick);
+  }
+
+  _render() {
+    const sourceW = this.source.width, sourceH = this.source.height;
+    const rect = this.preview.getBoundingClientRect();
+    // Scale cursor position (in CSS px on preview) to source-canvas coords.
+    const sx = (this.x / rect.width) * sourceW;
+    const sy = (this.y / rect.height) * sourceH;
+    const sampleW = this.lensSize / this.zoom;
+    const sampleH = this.lensSize / this.zoom;
+    this.ctx.clearRect(0, 0, this.lensSize, this.lensSize);
+    this.ctx.save();
+    // Circular clip so the magnification stays inside the rim.
+    this.ctx.beginPath();
+    this.ctx.arc(this.lensSize / 2, this.lensSize / 2, this.lensSize / 2 - 2, 0, Math.PI * 2);
+    this.ctx.closePath();
+    this.ctx.clip();
+    this.ctx.drawImage(
+      this.source,
+      sx - sampleW / 2, sy - sampleH / 2, sampleW, sampleH,
+      0, 0, this.lensSize, this.lensSize
+    );
+    // Subtle vignette inside the lens to mimic a real glass edge.
+    const g = this.ctx.createRadialGradient(
+      this.lensSize / 2, this.lensSize / 2, this.lensSize / 3,
+      this.lensSize / 2, this.lensSize / 2, this.lensSize / 2
+    );
+    g.addColorStop(0, "rgba(0,0,0,0)");
+    g.addColorStop(1, "rgba(0,0,0,0.35)");
+    this.ctx.fillStyle = g;
+    this.ctx.fillRect(0, 0, this.lensSize, this.lensSize);
+    this.ctx.restore();
+  }
+}
+
+function clamp255(v) { return Math.max(0, Math.min(255, Math.round(v))); }
+
+/* ============================================================
+   Sample painters — procedural images for users without their own.
+   ============================================================ */
+
+function paintSample(canvas, kind) {
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  if (kind === "bright") {
+    // sunny sky/landscape
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, "#ffd66e");
+    g.addColorStop(0.45, "#ffb14a");
+    g.addColorStop(0.9, "#3a7e3a");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+    // Bright sun
+    const sunR = W * 0.18;
+    const sun = ctx.createRadialGradient(W * 0.7, H * 0.25, 0, W * 0.7, H * 0.25, sunR);
+    sun.addColorStop(0, "rgba(255,255,200,0.95)");
+    sun.addColorStop(1, "rgba(255,255,200,0)");
+    ctx.fillStyle = sun;
+    ctx.beginPath(); ctx.arc(W * 0.7, H * 0.25, sunR, 0, Math.PI * 2); ctx.fill();
+  } else if (kind === "dim") {
+    // overcast indoor
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, "#586079");
+    g.addColorStop(1, "#2a2f3e");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+    // soft window of light
+    const win = ctx.createRadialGradient(W * 0.3, H * 0.4, 0, W * 0.3, H * 0.4, W * 0.5);
+    win.addColorStop(0, "rgba(220,210,180,0.55)");
+    win.addColorStop(1, "rgba(220,210,180,0)");
+    ctx.fillStyle = win;
+    ctx.fillRect(0, 0, W, H);
+  } else if (kind === "dark") {
+    // night
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, "#0a0c1a");
+    g.addColorStop(1, "#1a1424");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+    // a single distant light
+    const lit = ctx.createRadialGradient(W * 0.42, H * 0.5, 0, W * 0.42, H * 0.5, W * 0.18);
+    lit.addColorStop(0, "rgba(255,200,140,0.65)");
+    lit.addColorStop(1, "rgba(255,200,140,0)");
+    ctx.fillStyle = lit;
+    ctx.fillRect(0, 0, W, H);
+  } else if (kind === "chart") {
+    // bar chart
+    ctx.fillStyle = "#0e1018"; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#7ad7ff";
+    const bars = [0.35, 0.6, 0.45, 0.85, 0.7, 0.5];
+    const bw = W * 0.10;
+    bars.forEach((v, i) => {
+      const x = W * 0.10 + i * (bw + W * 0.025);
+      const h = H * v * 0.8;
+      ctx.fillRect(x, H - h - H * 0.10, bw, h);
+    });
+    // axis line
+    ctx.strokeStyle = "#3a4055"; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(W * 0.06, H * 0.10);
+    ctx.lineTo(W * 0.06, H * 0.90);
+    ctx.lineTo(W * 0.94, H * 0.90);
+    ctx.stroke();
+  }
+}
+
+/* ============================================================
+   Brightness sampling
+   ============================================================ */
+
+function canvasBrightness(canvas) {
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  // Downsample to 32x32 for cheap brightness average.
+  const off = document.createElement("canvas");
+  off.width = 32; off.height = 32;
+  off.getContext("2d").drawImage(canvas, 0, 0, 32, 32);
+  const data = off.getContext("2d").getImageData(0, 0, 32, 32).data;
+  let total = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    // BT.709 luma
+    total += 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+  }
+  const mean = total / (32 * 32);
+  return mean / 255;
+}
+
+/* ============================================================
+   Real-mode bridge — POST /api/analyze
+   ============================================================ */
+
+function canvasToRGBBase64(canvas, side = 16) {
+  const off = document.createElement("canvas");
+  off.width = side; off.height = side;
+  off.getContext("2d").drawImage(canvas, 0, 0, side, side);
+  const rgba = off.getContext("2d").getImageData(0, 0, side, side).data;
+  const rgb = new Uint8Array(side * side * 3);
+  for (let i = 0, j = 0; i < rgba.length; i += 4, j += 3) {
+    rgb[j] = rgba[i]; rgb[j + 1] = rgba[i + 1]; rgb[j + 2] = rgba[i + 2];
+  }
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let k = 0; k < rgb.length; k += CHUNK) {
+    bin += String.fromCharCode.apply(null, rgb.subarray(k, k + CHUNK));
+  }
+  return btoa(bin);
+}
+
+async function realAnalyze(imageB64, prompt) {
+  const resp = await fetch(CONFIG.apiBase + "/api/analyze", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image_b64: imageB64, prompt, backend: "mock" }),
+  });
+  if (!resp.ok) throw new Error("HTTP " + resp.status);
+  return resp.json();
+}
+
+function fakeAnalyze(canvas, prompt) {
+  // No server — synthesise something that looks plausible for the demo.
+  // Centre the focus on the brightest 16x16 region of the canvas.
+  const off = document.createElement("canvas");
+  const G = CONFIG.attnGridSize;
+  off.width = G; off.height = G;
+  off.getContext("2d").drawImage(canvas, 0, 0, G, G);
+  const px = off.getContext("2d").getImageData(0, 0, G, G).data;
+  const grid = [];
+  let bestI = 0, bestJ = 0, bestV = -1;
+  for (let i = 0; i < G; i++) {
+    const row = [];
+    for (let j = 0; j < G; j++) {
+      const k = (i * G + j) * 4;
+      const lum = 0.21 * px[k] + 0.72 * px[k + 1] + 0.07 * px[k + 2];
+      row.push(lum / 255);
+      if (lum > bestV) { bestV = lum; bestI = i; bestJ = j; }
+    }
+    grid.push(row);
+  }
+  // Smear the grid into a Gaussian centred on the brightest cell.
+  const sigma = G / 4.0;
+  const out = [];
+  for (let i = 0; i < G; i++) {
+    const r = [];
+    for (let j = 0; j < G; j++) {
+      const dy = i - bestI, dx = j - bestJ;
+      r.push(Math.exp(-(dx * dx + dy * dy) / (2 * sigma * sigma)));
+    }
+    out.push(r);
+  }
+  // Confidence proxy: how peaked the brightness was.
+  const meanLum = grid.flat().reduce((a, b) => a + b, 0) / (G * G);
+  const peak = Math.min(1, bestV / 255);
+  const confidence = Math.max(0.35, Math.min(0.97, peak - meanLum + 0.45));
+  return {
+    result: pickFakeAnswer(prompt, peak, meanLum),
+    confidence,
+    attention_grid: out,
+    latency_ms: 0.4 + Math.random() * 0.6,
+    backend: "simulated",
+    steps: [],
+  };
+}
+
+function pickFakeAnswer(prompt, peak, mean) {
+  if (peak > 0.85) return "A bright high-contrast region dominates the upper portion of the frame.";
+  if (peak > 0.6)  return "A clearly defined subject occupies the central area.";
+  if (mean < 0.25) return "A dim scene with one prominent illuminated source.";
+  return "The scene is approximately uniform — no single dominant subject.";
+}
+
+function focalFromGrid(grid) {
+  let bestI = 0, bestJ = 0, bestV = -1;
+  for (let i = 0; i < grid.length; i++) {
+    for (let j = 0; j < grid[i].length; j++) {
+      if (grid[i][j] > bestV) { bestV = grid[i][j]; bestI = i; bestJ = j; }
+    }
+  }
+  return { row: bestI, col: bestJ };
+}
+
+/* ============================================================
+   App state
+   ============================================================ */
+
+const state = {
+  eyes: [],          // [Eye, Eye?]
+  prompts: [],       // textareas (filled at compare time)
+  compareMode: false,
+  liveMode: false,
+  serverInfo: null,
+  brightness: null,
+  lastResult: null,
+  waveform: null,
+  lens: null,
+};
+
+/* ============================================================
+   DOM refs
+   ============================================================ */
+
+const $ = (sel) => document.querySelector(sel);
+
+const stage = $("#stage");
+const dropZone = $("#drop-zone");
+const samplesEl = $("#samples");
+const promptEl = $("#prompt-1");
+const previewEl = $("#preview");
+const previewCanvas = $("#preview-canvas");
+const btnSee = $("#btn-see");
+const btnBlink = $("#btn-blink");
+const btnReplay = $("#btn-replay");
+const btnCompare = $("#btn-compare");
+const wfCanvas = $("#conf-waveform");
+const lensEl = $("#lens");
+const lensCanvas = $("#lens-canvas");
+const livePill = $("#live-pill");
+const liveText = $("#live-text");
+const telemEls = {
+  brightness: document.querySelector('[data-k="brightness"]'),
+  pupil: document.querySelector('[data-k="pupil"]'),
+  saccades: document.querySelector('[data-k="saccades"]'),
+  blinks: document.querySelector('[data-k="blinks"]'),
+  confidence: document.querySelector('[data-k="confidence"]'),
+  latency: document.querySelector('[data-k="latency"]'),
+  backend: document.querySelector('[data-k="backend"]'),
+  mode: document.querySelector('[data-k="mode"]'),
+};
+const confFill = $("#conf-fill");
+const answerCard = $("#answer-card");
+const answerText = $("#answer-text");
+const answerMeta = $("#answer-meta");
+
+/* ============================================================
+   Boot — build initial eye, paint sample, check live server
+   ============================================================ */
+
+function buildEye(seed) {
+  const eye = new Eye(seed);
+  eye.onTelemetry = updateTelemetry;
+  stage.appendChild(eye.root);
+  state.eyes.push(eye);
+  return eye;
+}
+
+function clearEyes() {
+  for (const e of state.eyes) { e.dispose(); e.root.remove(); }
+  state.eyes = [];
+}
+
+function updateTelemetry() {
+  if (!state.eyes[0]) return;
+  const e = state.eyes[0];
+  telemEls.pupil.textContent = e.pupilSize.toFixed(1) + " px";
+  telemEls.saccades.textContent = e.saccades;
+  telemEls.blinks.textContent = e.blinks;
+  if (state.brightness != null) {
+    telemEls.brightness.textContent = (state.brightness * 100).toFixed(0) + " %";
+  }
+  if (e.confidence != null) {
+    telemEls.confidence.firstChild.textContent = e.confidence.toFixed(3) + " ";
+    confFill.style.width = (e.confidence * 100).toFixed(0) + "%";
+    confFill.classList.toggle("low", e.confidence < 0.6);
+    telemEls.confidence.classList.remove("green", "warm", "hot");
+    if (e.confidence > 0.75) telemEls.confidence.classList.add("green");
+    else if (e.confidence > 0.55) telemEls.confidence.classList.add("warm");
+    else telemEls.confidence.classList.add("hot");
+  }
+  if (state.lastResult) {
+    telemEls.latency.textContent = state.lastResult.latency_ms.toFixed(2) + " ms";
+    telemEls.backend.textContent = state.lastResult.backend;
+  }
+  telemEls.mode.textContent = state.compareMode ? "compare (two eyes)" : "single eye";
+}
+
+async function checkLiveServer() {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 1500);
+    const resp = await fetch(CONFIG.apiBase + "/api/health", { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!resp.ok) throw new Error("nope");
+    const data = await resp.json();
+    state.liveMode = true;
+    state.serverInfo = data;
+    livePill.classList.add("connected");
+    liveText.innerHTML = `✓ live · v${data.version} · ${data.backends.join("·")}`;
+  } catch (err) {
+    state.liveMode = false;
+    livePill.classList.remove("connected");
+    liveText.innerHTML = `simulated · run <code>python demo/server.py</code>`;
+  }
+}
+
+/* ============================================================
+   Drop / sample handling
+   ============================================================ */
+
+dropZone.addEventListener("click", () => {
+  // Trigger hidden file input
+  const inp = document.createElement("input");
+  inp.type = "file"; inp.accept = "image/*";
+  inp.addEventListener("change", () => {
+    if (inp.files && inp.files[0]) loadFile(inp.files[0]);
+  });
+  inp.click();
+});
+dropZone.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  dropZone.classList.add("over");
+});
+dropZone.addEventListener("dragleave", () => dropZone.classList.remove("over"));
+dropZone.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dropZone.classList.remove("over");
+  const file = e.dataTransfer.files[0];
+  if (file && file.type.startsWith("image/")) loadFile(file);
+});
+
+function loadFile(file) {
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const img = new Image();
+    img.onload = () => {
+      const ctx = previewCanvas.getContext("2d");
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, previewCanvas.width, previewCanvas.height);
+      ctx.drawImage(img, 0, 0, previewCanvas.width, previewCanvas.height);
+      previewEl.classList.add("visible");
+      onImageReady();
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+samplesEl.addEventListener("click", (e) => {
+  const btn = e.target.closest(".sample-chip");
+  if (!btn) return;
+  document.querySelectorAll(".sample-chip").forEach(c => c.classList.remove("active"));
+  btn.classList.add("active");
+  paintSample(previewCanvas, btn.dataset.sample);
+  previewEl.classList.add("visible");
+  onImageReady();
+});
+
+function onImageReady() {
+  state.brightness = canvasBrightness(previewCanvas);
+  for (const eye of state.eyes) eye.setPupilFromBrightness(state.brightness);
+  updateTelemetry();
+}
+
+/* ============================================================
+   See — main analysis trigger
+   ============================================================ */
+
+btnSee.addEventListener("click", () => doSee());
+btnBlink.addEventListener("click", () => {
+  for (const eye of state.eyes) eye.blink();
+});
+btnReplay.addEventListener("click", () => {
+  for (const eye of state.eyes) eye.playScanpath();
+});
+
+async function doSee() {
+  if (!previewEl.classList.contains("visible")) {
+    // No image yet — pick a default sample so the user always sees something.
+    document.querySelector('[data-sample="bright"]').click();
+    return;
+  }
+  btnSee.disabled = true;
+  btnReplay.disabled = true;
+
+  const prompt = promptEl.value.trim() || "What is in this image?";
+  const imageB64 = canvasToRGBBase64(previewCanvas, 16);
+
+  // 1. Wipe stale overlays from the prior analysis.
+  for (const eye of state.eyes) eye.clearOverlays();
+
+  // 2. Deliberate blink — every analysis feels like a moment of perception.
+  await Promise.all(state.eyes.map(eye => eye.blink()));
+
+  // 3. Pupil zooms open to "look through" — heatmap will fade in inside it.
+  for (const eye of state.eyes) eye.zoomPupilIn();
+
+  // 4. Run the analysis (real or simulated) in parallel with the zoom.
+  let result;
+  if (state.liveMode) {
+    try {
+      result = await realAnalyze(imageB64, prompt);
+    } catch (err) {
+      console.warn("real analyze failed, falling back:", err);
+      result = fakeAnalyze(previewCanvas, prompt);
+    }
+  } else {
+    await new Promise(r => setTimeout(r, 320));
+    result = fakeAnalyze(previewCanvas, prompt);
+  }
+
+  state.lastResult = result;
+  applyResult(state.eyes[0], result);
+
+  // 5. Compare mode: second eye gets its own analysis on a perturbed prompt.
+  if (state.compareMode && state.eyes[1]) {
+    const altPrompt = prompt + " (with high detail)";
+    let alt;
+    try {
+      alt = state.liveMode
+        ? await realAnalyze(imageB64, altPrompt)
+        : fakeAnalyze(previewCanvas, altPrompt);
+    } catch (err) {
+      alt = fakeAnalyze(previewCanvas, altPrompt);
+    }
+    applyResult(state.eyes[1], alt);
+  }
+
+  btnSee.disabled = false;
+  btnReplay.disabled = false;
+}
+
+function applyResult(eye, result) {
+  const focal = focalFromGrid(result.attention_grid);
+  // Confidence first — sets iris tint + waveform hue before the heatmap blooms.
+  eye.setConfidence(result.confidence);
+  if (state.waveform) {
+    state.waveform.setConfidence(result.confidence);
+    if (eye.currentHue != null) state.waveform.setHue(eye.currentHue);
+  }
+  // Render heatmap; trigger zoom-in variant so it reads as "through the pupil".
+  eye.renderHeatmap(result.attention_grid, focal);
+  eye.heatmap.classList.add("zoom-in");
+  // Schedule the scanpath replay + attention arrows shortly after bloom.
+  setTimeout(() => {
+    eye.playScanpath(result.attention_grid);
+    eye.showAttentionArrows(result.attention_grid, focal);
+    eye.pulseNeural(result.attention_grid);
+  }, 380);
+  // Restore natural pupil after the scanpath has played out so the eye
+  // settles back to its "looking at the scene" pose.
+  setTimeout(() => {
+    eye.zoomPupilOut();
+  }, 2600);
+  showAnswer(result);
+  updateTelemetry();
+}
+
+function showAnswer(result) {
+  answerCard.style.display = "block";
+  answerCard.classList.toggle("live", state.liveMode);
+  answerText.textContent = result.result;
+  answerMeta.innerHTML = `
+    <span>backend <b>${escapeHTML(result.backend)}</b></span>
+    <span>confidence <b>${result.confidence.toFixed(3)}</b></span>
+    <span>latency <b>${result.latency_ms.toFixed(2)} ms</b></span>
+    <span>${state.liveMode ? "live" : "simulated"}</span>
+  `;
+}
+
+function escapeHTML(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+
+/* ============================================================
+   Compare mode — split the eye into two
+   ============================================================ */
+
+btnCompare.addEventListener("click", () => {
+  state.compareMode = !state.compareMode;
+  btnCompare.classList.toggle("active", state.compareMode);
+  if (state.compareMode) {
+    // Add a second eye with a different seed → different fibers/crypts/veins.
+    const seed = 1 + Math.floor(Math.random() * 9999);
+    const second = buildEye(seed);
+    if (state.brightness != null) second.setPupilFromBrightness(state.brightness);
+    stage.classList.add("compare");
+    // Re-apply last result to the new eye for instant feedback.
+    if (state.lastResult) applyResult(second, state.lastResult);
+  } else {
+    // Remove all but the first eye.
+    while (state.eyes.length > 1) {
+      const e = state.eyes.pop();
+      e.dispose();
+      e.root.remove();
+    }
+    stage.classList.remove("compare");
+  }
+  updateTelemetry();
+});
+
+/* ============================================================
+   Init
+   ============================================================ */
+
+(function init() {
+  buildEye(1);
+  checkLiveServer();
+
+  // Boot the certainty waveform + image-hover magnifying lens.
+  state.waveform = new ConfidenceWaveform(wfCanvas);
+  state.lens = new Lens(previewEl, previewCanvas, lensEl, lensCanvas);
+
+  // Telemetry tick — even when nothing happens, keep it lively.
+  setInterval(updateTelemetry, 1000);
+
+  // Friendly first-load: paint the bright sample so the eye has
+  // something to react to without forcing user input.
+  document.querySelector('[data-sample="bright"]').click();
+})();
+</script>
+</body>
+</html>

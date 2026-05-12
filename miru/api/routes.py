@@ -11,18 +11,30 @@ from fastapi.responses import Response, StreamingResponse
 
 from miru.api.streaming import stream_analyze
 from miru.config import settings
+from miru.gradcam import GradCAMExplainer, attention_to_cam
 from miru.metrics import get_metrics
 from miru.models import registry
 from miru.reasoning.tracer import ReasoningTracer
 from miru.recorder import maybe_record
 from miru.schemas import (
     ErrorResponse,
+    ExplainRegion,
+    ExplainRequest,
+    ExplainResponse,
     HealthResponse,
     ImageInput,
     ReasoningTrace,
 )
 
 logger = logging.getLogger(__name__)
+
+# Explainability method registry: maps method name → implementation status.
+EXPLAIN_METHODS: dict[str, str] = {
+    "attention": "implemented",
+    "gradcam": "implemented",
+    "lime": "roadmap",
+    "shap": "roadmap",
+}
 
 # ---------------------------------------------------------------------------
 # Initialise backend registry once at module import time.
@@ -175,9 +187,123 @@ def analyze_stream(
     )
 
 
+@router.post(
+    "/explain",
+    responses={
+        200: {"model": ExplainResponse},
+        422: {"model": ErrorResponse},
+        501: {"model": ErrorResponse},
+    },
+)
+def explain(
+    payload: ExplainRequest,
+    overlay: bool = Query(default=False, description="Include base64 PNG overlay in response."),
+) -> Response:
+    """Run an explainability method against the input image.
+
+    Supported ``method`` values: ``attention`` (raw VLM attention),
+    ``gradcam`` (Grad-CAM with attention fallback for ViT backbones).
+    ``lime`` / ``shap`` are on the roadmap and return 501.
+    """
+    status = EXPLAIN_METHODS.get(payload.method)
+    if status is None:
+        return _json_error(422, "unknown_method", f"method '{payload.method}' is not recognised")
+    if status == "roadmap":
+        return _json_error(501, "not_implemented", f"method '{payload.method}' is on the roadmap")
+
+    image_array = _decode_image(payload.image_b64)
+    try:
+        backend = registry.get(payload.backend)
+    except KeyError:
+        backend = registry.get(settings.default_backend)
+
+    t0 = time.perf_counter()
+    vlm_output = backend.infer(image_array, payload.question)
+
+    if payload.method == "attention":
+        heatmap = attention_to_cam(vlm_output.attention_weights)
+        used_fallback = False
+    else:  # "gradcam"
+        # Backends here expose only post-hoc attention weights, not torch hooks.
+        # Use the Grad-CAM attention fallback path: same algorithm as a pure
+        # ViT (no Conv2d) would invoke.
+        result = GradCAMExplainer.from_attention(
+            vlm_output.attention_weights, target_class=payload.target_class, top_k=payload.top_k
+        )
+        heatmap = result.heatmap
+        used_fallback = result.used_fallback
+
+    latency_ms = (time.perf_counter() - t0) * 1_000.0
+
+    h, w = heatmap.shape
+    top = _heatmap_top_regions(heatmap, payload.top_k)
+    overlay_b64: str | None = None
+    if overlay:
+        try:
+            from miru.visualization.overlay import generate_overlay
+
+            overlay_b64 = generate_overlay(payload.image_b64, heatmap)
+        except Exception:  # noqa: BLE001 — overlay is best-effort
+            overlay_b64 = None
+
+    return Response(
+        content=ExplainResponse(
+            method=payload.method,
+            status=status,
+            backend=backend.name,
+            answer=vlm_output.answer,
+            width=w,
+            height=h,
+            heatmap=heatmap.tolist(),
+            top_regions=top,
+            used_fallback=used_fallback,
+            overlay_b64=overlay_b64,
+            latency_ms=latency_ms,
+        ).model_dump_json(),
+        media_type="application/json",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _json_error(status_code: int, error: str, detail: str) -> Response:
+    """Render a structured ErrorResponse with a non-200 status code."""
+    body = ErrorResponse(error=error, detail=detail).model_dump_json()
+    return Response(content=body, status_code=status_code, media_type="application/json")
+
+
+def _heatmap_top_regions(heatmap: np.ndarray, k: int) -> list[ExplainRegion]:
+    """Build :class:`ExplainRegion` list with normalised bounding boxes.
+
+    Each region's bbox covers exactly one grid cell.  Coordinates are
+    image-relative (``[0, 1]``) so demo callers can scale them against the
+    rendered image without knowing the heatmap resolution.
+    """
+    if k <= 0 or heatmap.size == 0:
+        return []
+    h, w = heatmap.shape
+    flat = heatmap.flatten()
+    k_clamped = min(k, flat.size)
+    idx = np.argpartition(flat, -k_clamped)[-k_clamped:]
+    idx = idx[np.argsort(flat[idx])[::-1]]
+    rows, cols = np.unravel_index(idx, heatmap.shape)
+    regions: list[ExplainRegion] = []
+    for r, c in zip(rows, cols):
+        regions.append(
+            ExplainRegion(
+                row=int(r),
+                col=int(c),
+                score=float(heatmap[r, c]),
+                bbox_x1=float(c) / w,
+                bbox_y1=float(r) / h,
+                bbox_x2=float(c + 1) / w,
+                bbox_y2=float(r + 1) / h,
+            )
+        )
+    return regions
 
 
 def _decode_image(image_b64: str) -> np.ndarray:
