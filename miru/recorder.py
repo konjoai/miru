@@ -108,9 +108,27 @@ def find_record_by_id(
         The matching record dict, or ``None`` if no match is found.
         Newest match wins when duplicates exist (rare; intentional
         for re-runs).
+
+    Drains the singleton recorder's in-memory queue before scanning so a
+    record produced microseconds ago by ``maybe_record`` is visible here.
+    Without this, callers that record-then-immediately-lookup (the common
+    case: a UI fetching the EU AI Act report right after `/explain`)
+    would hit a 404 until the recorder's next periodic flush.
     """
     if not analysis_id:
         return None
+    # Best-effort drain — only flushes the global singleton; safe if the
+    # caller passes a custom directory that the singleton isn't writing
+    # to (the flush is a no-op for unrelated paths).
+    global _RECORDER
+    with _RECORDER_LOCK:
+        rec = _RECORDER
+    if rec is not None:
+        try:
+            rec.flush()
+        except (OSError, ValueError):
+            # Flush failure must not block the lookup.
+            pass
     base = directory or os.environ.get(RECORD_PATH_ENV) or DEFAULT_PATH
     # Files are timestamped lexicographically; iterate newest-first for
     # a fast path when the caller just recorded the analysis.
@@ -118,11 +136,11 @@ def find_record_by_id(
     for path in files:
         for line in _read_lines(path):
             try:
-                rec = json.loads(line)
+                rec_data = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if rec.get("analysis_id") == analysis_id:
-                return rec
+            if rec_data.get("analysis_id") == analysis_id:
+                return rec_data
     return None
 
 

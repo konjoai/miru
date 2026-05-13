@@ -1,0 +1,2016 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Miru — Saliency Explainer</title>
+<!--
+  demo/explain.html — the saliency visualizer.
+
+  Heat moving through neural tissue. Seven animation systems wired to
+  the deployable explainability API (mounted by demo/server.py at
+  /api/v2/*):
+
+    1. Saliency heat pulse        — top-K cells emit staggered radial glows
+    2. Deletion test masking      — scan-line reveal + slot-machine score
+    3. Consensus agreement ripple — circular ripples on high-agreement cells
+    4. EU AI Act compliance gauge — three-arc SVG ring, sweep on load
+    5. Method selector magnetic tabs — lerp underline, cross-fade overlay
+    6. Export format ripple       — circle from click + scale-bounce
+    7. Scroll-entrance stagger    — IntersectionObserver, 90ms cascade
+
+  Pure frontend, zero new dependencies, Konjo palette only.
+-->
+<style>
+  /* ============================================================
+     Konjo design tokens
+     ============================================================ */
+  :root {
+    --bg-0: #06060f;
+    --bg-1: #0c0c1a;
+    --bg-2: #131326;
+    --bg-3: #1b1a35;
+    --line: #1f1f3a;
+    --line-2: #2a2950;
+    --fg-0: #f0eeff;
+    --fg-1: #b0acd0;
+    --fg-2: #7c789c;
+    --fg-3: #50506d;
+
+    --konjo:   #7c3aed;       /* primary purple */
+    --konjo-2: #b08cff;       /* lighter purple */
+    --konjo-3: #e0d9ff;       /* lightest tint — peak saliency */
+    --konjo-bg: rgba(124, 58, 237, 0.08);
+    --konjo-bord: rgba(124, 58, 237, 0.35);
+
+    --green:  #22c55e;        /* compliant */
+    --amber:  #f59e0b;        /* partial / warning */
+    --red:    #ef4444;        /* missing / disagreement */
+    --orange: #fb923c;        /* deletion flash */
+
+    --easeOutQuint: cubic-bezier(0.23, 1, 0.32, 1);
+    --easeOutBack:  cubic-bezier(0.34, 1.56, 0.64, 1);
+
+    --mono: ui-monospace, "JetBrains Mono", "SF Mono", Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background:
+      radial-gradient(ellipse 90% 60% at 50% -10%, rgba(124, 58, 237, 0.10), transparent 60%),
+      radial-gradient(ellipse 60% 50% at 80% 100%, rgba(176, 140, 255, 0.06), transparent 60%),
+      var(--bg-0);
+    color: var(--fg-0);
+    font-family: var(--sans);
+    line-height: 1.55;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+  a { color: var(--konjo-2); text-decoration: none; }
+  a:hover { color: var(--konjo-3); }
+  code { font-family: var(--mono); font-size: 0.9em; color: var(--konjo-2); }
+
+  /* ============================================================
+     Layout
+     ============================================================ */
+  .container { max-width: 1280px; margin: 0 auto; padding: 0 28px; }
+
+  header.top {
+    border-bottom: 1px solid var(--line);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    background: rgba(6, 6, 15, 0.7);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  header.top .row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 0; gap: 16px; flex-wrap: wrap;
+  }
+  .brand {
+    display: flex; align-items: center; gap: 12px; font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .brand .glyph {
+    width: 22px; height: 22px;
+    background: radial-gradient(circle at 30% 30%, var(--konjo-3), var(--konjo) 70%);
+    border-radius: 50%;
+    box-shadow: 0 0 16px var(--konjo);
+  }
+  header.top nav { display: flex; gap: 22px; font-size: 13px; color: var(--fg-1); }
+  header.top nav a { color: var(--fg-1); }
+  header.top nav a:hover { color: var(--fg-0); }
+  header.top nav a.current { color: var(--konjo-3); }
+
+  .live-pill {
+    display: inline-flex; gap: 8px; align-items: center;
+    padding: 5px 12px; border-radius: 999px;
+    background: var(--bg-2); border: 1px solid var(--line-2);
+    font-family: var(--mono); font-size: 12px; color: var(--fg-1);
+    transition: all .25s;
+  }
+  .live-pill .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--fg-3);
+  }
+  .live-pill.connected {
+    border-color: rgba(34, 197, 94, 0.4);
+    background: rgba(34, 197, 94, 0.06);
+    color: var(--green);
+  }
+  .live-pill.connected .dot {
+    background: var(--green);
+    animation: pulse-dot 1.6s infinite;
+  }
+  @keyframes pulse-dot {
+    0%   { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6); }
+    70%  { box-shadow: 0 0 0 8px rgba(34, 197, 94, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+  }
+
+  main { padding: 64px 0 96px; display: flex; flex-direction: column; gap: 56px; }
+
+  /* ----- Lede ----- */
+  .lede { text-align: center; max-width: 760px; margin: 0 auto; }
+  .lede .eyebrow {
+    display: inline-block;
+    color: var(--konjo-2); font-family: var(--mono); font-size: 11px;
+    letter-spacing: 0.22em; text-transform: uppercase; margin-bottom: 14px;
+  }
+  .lede h1 {
+    font-size: clamp(38px, 5.5vw, 64px);
+    font-weight: 600; letter-spacing: -0.025em; line-height: 1.05; margin: 0;
+  }
+  .lede h1 .accent {
+    background: linear-gradient(135deg, var(--konjo-2) 0%, var(--konjo-3) 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .lede p { color: var(--fg-1); font-size: 16px; margin: 16px 0 0 0; }
+
+  /* ----- Grid ----- */
+  .layout {
+    display: grid;
+    grid-template-columns: 320px 1fr 320px;
+    gap: 28px;
+    align-items: start;
+  }
+  @media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } }
+
+  /* ============================================================
+     Panel base
+     ============================================================ */
+  .panel {
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 22px;
+  }
+  .panel h3 {
+    margin: 0 0 14px 0;
+    font-size: 11px; font-weight: 500;
+    text-transform: uppercase; letter-spacing: 0.18em;
+    color: var(--fg-2); font-family: var(--mono);
+  }
+  .panel + .panel { margin-top: 18px; }
+
+  /* ============================================================
+     Image input
+     ============================================================ */
+  .drop-zone {
+    border: 1.5px dashed var(--line-2);
+    border-radius: 12px;
+    padding: 28px 16px;
+    text-align: center;
+    color: var(--fg-2);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all .2s ease;
+    background: rgba(255, 255, 255, 0.01);
+  }
+  .drop-zone:hover, .drop-zone.over {
+    border-color: var(--konjo-bord);
+    background: var(--konjo-bg);
+    color: var(--fg-0);
+  }
+  .drop-zone .icon {
+    font-size: 24px; margin-bottom: 8px; color: var(--konjo-2);
+  }
+
+  .samples {
+    margin-top: 12px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .sample-chip {
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 8px;
+    font-size: 12px;
+    color: var(--fg-1);
+    cursor: pointer;
+    transition: all .15s;
+    font-family: var(--mono);
+  }
+  .sample-chip:hover {
+    border-color: var(--line-2);
+    color: var(--fg-0);
+    background: var(--bg-3);
+  }
+  .sample-chip.active {
+    border-color: var(--konjo);
+    color: var(--konjo-3);
+    background: var(--konjo-bg);
+  }
+
+  textarea.prompt {
+    margin-top: 12px;
+    width: 100%;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 12px;
+    color: var(--fg-0);
+    font-family: var(--sans);
+    font-size: 13px;
+    line-height: 1.4;
+    resize: vertical;
+    min-height: 60px;
+    transition: border-color .15s;
+  }
+  textarea.prompt:focus { outline: none; border-color: var(--konjo); }
+
+  .preview {
+    margin-top: 14px;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    overflow: hidden;
+    background: var(--bg-0);
+    display: none;
+    position: relative;
+  }
+  .preview.visible { display: block; }
+  .preview canvas { width: 100%; height: 100%; display: block; }
+
+  /* Deletion-mask scanline overlay (animated by JS). */
+  .preview .delete-scanline {
+    position: absolute;
+    left: 0; right: 0; top: 0;
+    height: 4px;
+    pointer-events: none;
+    background: linear-gradient(180deg,
+      rgba(251, 146, 60, 0) 0%,
+      rgba(251, 146, 60, 0.85) 50%,
+      rgba(251, 146, 60, 0) 100%);
+    box-shadow: 0 0 12px rgba(251, 146, 60, 0.6);
+    opacity: 0;
+    transition: opacity 0.2s ease;
+  }
+  .preview .delete-scanline.live { opacity: 1; }
+
+  /* ============================================================
+     Method selector — magnetic tabs (#5)
+     ============================================================ */
+  .methods {
+    display: flex;
+    gap: 4px;
+    padding: 6px;
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    position: relative;
+    width: max-content;
+    margin: 0 auto 16px;
+  }
+  .methods .tab {
+    position: relative;
+    padding: 9px 18px;
+    border-radius: 8px;
+    color: var(--fg-1);
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 500;
+    transition: color 0.2s ease;
+    user-select: none;
+    z-index: 2;
+  }
+  .methods .tab:hover { color: var(--fg-0); }
+  .methods .tab.active { color: var(--konjo-3); }
+  /* Sliding indicator — position animated continuously by JS for the
+     magnetic lerp toward hovered tabs. */
+  .methods .indicator {
+    position: absolute;
+    top: 6px; bottom: 6px;
+    border-radius: 8px;
+    background: var(--konjo-bg);
+    border: 1px solid var(--konjo-bord);
+    box-shadow:
+      0 0 0 0 var(--konjo-bord),
+      0 0 22px -8px var(--konjo);
+    z-index: 1;
+    will-change: left, width;
+  }
+  .methods .indicator.snapped {
+    box-shadow:
+      0 0 0 1px var(--konjo-bord),
+      0 0 32px -4px var(--konjo);
+  }
+
+  /* ============================================================
+     Saliency canvas
+     ============================================================ */
+  .stage {
+    position: relative;
+    aspect-ratio: 1 / 1;
+    border-radius: 16px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    background:
+      radial-gradient(circle at 50% 50%, var(--bg-2) 0%, var(--bg-0) 100%);
+  }
+  .stage canvas {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    display: block;
+  }
+  /* Base layer — colourised saliency grid, refreshed on every analysis. */
+  .stage .layer-base {
+    transition: opacity 0.45s ease;
+  }
+  .stage .layer-base.fading { opacity: 0.15; }
+  /* Overlay layer — animated pulse particles (#1). */
+  .stage .layer-pulse {
+    mix-blend-mode: screen;
+    pointer-events: none;
+  }
+  /* Consensus ripples (#3). */
+  .stage .layer-ripples {
+    mix-blend-mode: screen;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.4s ease;
+  }
+  .stage .layer-ripples.live { opacity: 1; }
+
+  .stage-caption {
+    position: absolute;
+    left: 14px; bottom: 14px;
+    padding: 6px 12px;
+    background: rgba(6, 6, 15, 0.65);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid var(--line-2);
+    border-radius: 999px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--fg-1);
+  }
+  .stage-caption b { color: var(--fg-0); font-weight: 500; }
+
+  .stage-empty {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    color: var(--fg-2);
+    font-family: var(--mono);
+    font-size: 13px;
+    gap: 6px;
+    text-align: center;
+    padding: 24px;
+  }
+  .stage-empty.hidden { display: none; }
+  .stage-empty .arrow {
+    color: var(--konjo-2);
+    font-size: 32px;
+    margin-bottom: 8px;
+  }
+
+  /* ============================================================
+     Action row + export buttons
+     ============================================================ */
+  .action-row {
+    margin-top: 14px;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 10px 18px;
+    border-radius: 9px;
+    border: 1px solid transparent;
+    font-size: 13px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: all .15s ease;
+    font-family: var(--sans);
+    position: relative;
+    overflow: hidden;
+  }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn.primary {
+    background: linear-gradient(135deg, var(--konjo) 0%, var(--konjo-2) 100%);
+    color: #07080c;
+    box-shadow: 0 6px 22px -10px var(--konjo);
+  }
+  .btn.primary:hover:not(:disabled) {
+    box-shadow: 0 12px 32px -10px var(--konjo);
+  }
+  .btn.ghost {
+    background: var(--bg-2);
+    border-color: var(--line-2);
+    color: var(--fg-0);
+  }
+  .btn.ghost:hover:not(:disabled) { background: var(--bg-3); }
+  .btn.toggle.active {
+    background: var(--konjo-bg);
+    border-color: var(--konjo-bord);
+    color: var(--konjo-3);
+  }
+
+  /* Export button group + ripple (#6). */
+  .export-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .export-btn {
+    flex: 1;
+    padding: 10px 8px;
+    border-radius: 8px;
+    border: 1px solid var(--line-2);
+    background: var(--bg-2);
+    color: var(--fg-0);
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    transition: all 0.15s ease;
+    position: relative;
+    overflow: hidden;
+    will-change: transform;
+  }
+  .export-btn:hover {
+    border-color: var(--konjo-bord);
+    color: var(--konjo-3);
+  }
+  .export-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  /* The ripple element is spawned and removed in JS. */
+  .export-btn .ripple {
+    position: absolute;
+    border-radius: 50%;
+    background: radial-gradient(circle,
+      rgba(124, 58, 237, 0.6) 0%,
+      rgba(124, 58, 237, 0) 70%);
+    pointer-events: none;
+    width: 0; height: 0;
+    animation: ripple-expand 400ms ease-out forwards;
+  }
+  @keyframes ripple-expand {
+    0%   { width: 0; height: 0; opacity: 0.85; }
+    100% { width: 320px; height: 320px; opacity: 0; }
+  }
+
+  /* ============================================================
+     Fidelity scorecard + slot-machine digits (#2)
+     ============================================================ */
+  .fidelity-card {
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .fidelity-card .score-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 14px;
+  }
+  .fidelity-card .label {
+    font-family: var(--mono); font-size: 11px;
+    color: var(--fg-2);
+    text-transform: uppercase; letter-spacing: 0.12em;
+  }
+  .fidelity-card .slot {
+    display: inline-flex;
+    font-family: var(--mono);
+    font-size: 32px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--fg-0);
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 6px 14px;
+    gap: 2px;
+  }
+  .fidelity-card .slot.low  { color: var(--red); border-color: rgba(239, 68, 68, 0.35); }
+  .fidelity-card .slot.mid  { color: var(--amber); border-color: rgba(245, 158, 11, 0.35); }
+  .fidelity-card .slot.high { color: var(--green); border-color: rgba(34, 197, 94, 0.35); }
+  .slot .digit {
+    display: inline-block;
+    height: 38px;
+    width: 18px;
+    overflow: hidden;
+    position: relative;
+    vertical-align: middle;
+  }
+  .slot .digit .reel {
+    display: flex;
+    flex-direction: column;
+    transition: transform 700ms cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: transform;
+  }
+  .slot .digit .reel span {
+    display: block;
+    height: 38px;
+    line-height: 38px;
+    text-align: center;
+  }
+  .slot .dot {
+    display: inline-block;
+    width: 8px;
+    text-align: center;
+    line-height: 38px;
+  }
+  .fidelity-card .baseline-strip {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    font-family: var(--mono); font-size: 11px;
+  }
+  .fidelity-card .baseline-strip .item {
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 10px;
+  }
+  .fidelity-card .baseline-strip .k { color: var(--fg-2); display: block; }
+  .fidelity-card .baseline-strip .v { color: var(--fg-0); font-size: 15px; }
+
+  .fidelity-warning {
+    display: none;
+    margin-top: 8px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    font-size: 12px;
+    color: #fca5a5;
+    line-height: 1.5;
+  }
+  .fidelity-warning.visible { display: block; }
+
+  /* ============================================================
+     Consensus mode (#3)
+     ============================================================ */
+  .consensus-card .grid-display {
+    aspect-ratio: 1 / 1;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    position: relative;
+    background: var(--bg-0);
+    margin-top: 12px;
+  }
+  .consensus-card .grid-display canvas {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    display: block;
+  }
+  .consensus-card .grid-display .empty {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--fg-2);
+    font-family: var(--mono); font-size: 11px;
+    text-align: center;
+    padding: 16px;
+  }
+  .consensus-card .grid-display .empty.hidden { display: none; }
+
+  .consensus-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-top: 12px;
+  }
+  .consensus-stats .item {
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  .consensus-stats .k { color: var(--fg-2); display: block; }
+  .consensus-stats .v { color: var(--fg-0); font-size: 15px; }
+  .consensus-legend {
+    display: flex; gap: 10px; flex-wrap: wrap;
+    margin-top: 12px;
+    font-family: var(--mono); font-size: 11px;
+    color: var(--fg-2);
+  }
+  .consensus-legend .swatch {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    margin-right: 5px;
+    vertical-align: middle;
+  }
+  .consensus-legend .agree  .swatch { background: var(--konjo); box-shadow: 0 0 8px var(--konjo); }
+  .consensus-legend .disagree .swatch { background: var(--red); box-shadow: 0 0 8px rgba(239, 68, 68, 0.6); }
+
+  /* ============================================================
+     EU AI Act compliance gauge (#4)
+     ============================================================ */
+  .gauge-card {
+    display: flex; flex-direction: column; align-items: center;
+    gap: 14px;
+  }
+  .gauge-card .gauge {
+    width: 220px; height: 220px;
+    position: relative;
+  }
+  .gauge-card .gauge svg {
+    width: 100%; height: 100%;
+    transform: rotate(-90deg);
+  }
+  .gauge-card .gauge .glow {
+    position: absolute; inset: 0;
+    border-radius: 50%;
+    background: radial-gradient(circle,
+      rgba(124, 58, 237, var(--glow-alpha, 0)) 0%,
+      transparent 60%);
+    pointer-events: none;
+    transition: background 0.6s ease;
+  }
+  .gauge-card .gauge-centre {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+  }
+  .gauge-card .gauge-centre .pct {
+    font-family: var(--mono);
+    font-size: 30px;
+    font-weight: 600;
+    color: var(--fg-0);
+    line-height: 1;
+  }
+  .gauge-card .gauge-centre .lbl {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--fg-2);
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    margin-top: 4px;
+  }
+  .gauge-card .articles {
+    display: flex; flex-direction: column;
+    gap: 8px;
+    width: 100%;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .gauge-card .articles .article {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 10px;
+    padding: 8px 10px;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    align-items: center;
+  }
+  .gauge-card .articles .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--fg-3);
+  }
+  .gauge-card .articles .article.ok    .dot { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .gauge-card .articles .article.warn  .dot { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
+  .gauge-card .articles .article.miss  .dot { background: var(--red);   box-shadow: 0 0 8px var(--red); }
+  .gauge-card .articles .article .name { color: var(--fg-0); }
+  .gauge-card .articles .article .status { color: var(--fg-2); }
+
+  /* ============================================================
+     Scroll-entrance stagger (#7)
+     ============================================================ */
+  .stagger {
+    opacity: 0;
+    transform: translateY(30px);
+    will-change: transform;
+  }
+  .stagger.enter {
+    transition: opacity 500ms var(--easeOutQuint),
+                transform 500ms var(--easeOutQuint);
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  /* ============================================================
+     Footer
+     ============================================================ */
+  footer {
+    border-top: 1px solid var(--line);
+    padding: 24px 0 48px;
+    margin-top: 32px;
+    color: var(--fg-2);
+    font-size: 12px;
+    font-family: var(--mono);
+  }
+  footer .row {
+    display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  }
+</style>
+</head>
+<body>
+
+<!-- ==================== HEADER ==================== -->
+<header class="top">
+  <div class="container row">
+    <div class="brand">
+      <div class="glyph"></div>
+      Miru — saliency explainer
+    </div>
+    <nav>
+      <a href="index.html">← page</a>
+      <a href="visual.html">eye demo</a>
+      <a class="current">explainer</a>
+      <a href="https://github.com/konjoai/miru" target="_blank" rel="noopener">github</a>
+    </nav>
+    <div class="live-pill" id="live-pill">
+      <span class="dot"></span>
+      <span id="live-text">checking server…</span>
+    </div>
+  </div>
+</header>
+
+<!-- ==================== MAIN ==================== -->
+<div class="container">
+<main>
+
+  <section class="lede stagger">
+    <div class="eyebrow">// vision · saliency · audit</div>
+    <h1>Heat moving through<br/><span class="accent">neural tissue.</span></h1>
+    <p>The model points at pixels. This page makes those pointers visible — pulsing where the model is most certain, rippling where methods agree, gauging compliance against the EU AI Act. Every value below comes from a real <code>/api/v2/explain</code> call.</p>
+  </section>
+
+  <!-- ===== Method selector ===== -->
+  <div class="methods stagger" id="methods">
+    <div class="indicator" id="method-indicator"></div>
+    <div class="tab active" data-method="attention">attention</div>
+    <div class="tab" data-method="gradcam">gradcam</div>
+    <div class="tab" data-method="lime">lime</div>
+    <div class="tab" data-method="shap">shap</div>
+  </div>
+
+  <div class="layout">
+
+    <!-- ===== LEFT — image input ===== -->
+    <aside class="panel stagger">
+      <h3>Image</h3>
+      <div class="drop-zone" id="drop-zone">
+        <div class="icon">⤓</div>
+        <div>drop an image here<br/><span style="opacity:.6">or pick a sample below</span></div>
+      </div>
+      <div class="samples" id="samples">
+        <button class="sample-chip active" data-sample="bright">bright</button>
+        <button class="sample-chip" data-sample="dim">dim</button>
+        <button class="sample-chip" data-sample="dark">dark</button>
+        <button class="sample-chip" data-sample="chart">chart</button>
+      </div>
+      <textarea class="prompt" id="prompt" rows="2">Where is the salient region?</textarea>
+      <div class="preview" id="preview">
+        <canvas id="preview-canvas" width="256" height="256"></canvas>
+        <div class="delete-scanline" id="delete-scanline"></div>
+      </div>
+      <div class="action-row">
+        <button class="btn primary" id="btn-explain">Run explanation</button>
+        <button class="btn ghost toggle" id="btn-consensus">Consensus mode</button>
+      </div>
+    </aside>
+
+    <!-- ===== CENTER — saliency stage ===== -->
+    <section class="stagger" style="display:flex; flex-direction:column; gap:16px;">
+      <div class="stage" id="stage">
+        <canvas class="layer-base"    id="canvas-base"   width="640" height="640"></canvas>
+        <canvas class="layer-pulse"   id="canvas-pulse"  width="640" height="640"></canvas>
+        <canvas class="layer-ripples" id="canvas-ripples" width="640" height="640"></canvas>
+        <div class="stage-empty" id="stage-empty">
+          <div class="arrow">↖</div>
+          <div>pick an image and run an explanation</div>
+          <div style="opacity:.6">the saliency map will pulse where the model attends</div>
+        </div>
+        <div class="stage-caption" id="stage-caption" hidden>
+          <span class="lbl">method:</span> <b id="cap-method">—</b> ·
+          <span class="lbl">conf:</span> <b id="cap-conf">—</b> ·
+          <span class="lbl">latency:</span> <b id="cap-latency">—</b>
+        </div>
+      </div>
+      <div class="panel" style="padding:14px 18px;">
+        <div style="display:flex; gap:18px; flex-wrap:wrap; align-items:center; font-family:var(--mono); font-size:12px; color:var(--fg-1);">
+          <span><span style="color:var(--fg-2)">answer:</span> <b id="answer-text" style="color:var(--fg-0);">—</b></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== RIGHT — fidelity + export + consensus stats ===== -->
+    <aside style="display:flex; flex-direction:column; gap:18px;">
+
+      <!-- Fidelity scorecard -->
+      <div class="panel fidelity-card stagger">
+        <h3>Fidelity (deletion test)</h3>
+        <div class="score-row">
+          <div>
+            <div class="label">fidelity score</div>
+            <div style="color:var(--fg-2); font-size:11px; font-family:var(--mono); margin-top:6px;">
+              drop in confidence when the top-K% salient pixels are masked
+            </div>
+          </div>
+          <div class="slot" id="fidelity-slot">
+            <span class="digit"><span class="reel"><span>0</span></span></span>
+            <span class="dot">.</span>
+            <span class="digit"><span class="reel"><span>0</span></span></span>
+            <span class="digit"><span class="reel"><span>0</span></span></span>
+            <span class="digit"><span class="reel"><span>0</span></span></span>
+          </div>
+        </div>
+        <div class="baseline-strip">
+          <div class="item">
+            <span class="k">baseline</span>
+            <span class="v" id="fid-baseline">—</span>
+          </div>
+          <div class="item">
+            <span class="k">masked</span>
+            <span class="v" id="fid-masked">—</span>
+          </div>
+        </div>
+        <div class="fidelity-warning" id="fidelity-warning">
+          ⚠ low fidelity — this explanation may not reflect the model's reasoning. Try a different method or check the input.
+        </div>
+        <button class="btn ghost" id="btn-fidelity" style="margin-top:4px;">Run deletion test</button>
+      </div>
+
+      <!-- Export -->
+      <div class="panel stagger">
+        <h3>Export</h3>
+        <div style="color:var(--fg-2); font-size:12px; font-family:var(--mono);">
+          download this analysis for audit / archival
+        </div>
+        <div class="export-row">
+          <button class="export-btn" data-fmt="json" disabled>json</button>
+          <button class="export-btn" data-fmt="png" disabled>png</button>
+          <button class="export-btn" data-fmt="pdf" disabled>pdf</button>
+        </div>
+        <div id="export-status" style="margin-top:8px; font-family:var(--mono); font-size:11px; color:var(--fg-2); min-height:14px;"></div>
+      </div>
+
+      <!-- Consensus grid -->
+      <div class="panel consensus-card stagger">
+        <h3>Consensus grid</h3>
+        <div style="color:var(--fg-2); font-size:11px; font-family:var(--mono); line-height:1.5;">
+          run two or more methods together — see where they agree and disagree.
+        </div>
+        <div class="grid-display">
+          <canvas id="canvas-consensus" width="280" height="280"></canvas>
+          <div class="empty" id="consensus-empty">enable consensus mode and click "Run explanation"</div>
+        </div>
+        <div class="consensus-stats">
+          <div class="item">
+            <span class="k">consensus_score</span>
+            <span class="v" id="consensus-score">—</span>
+          </div>
+          <div class="item">
+            <span class="k">disagree cells</span>
+            <span class="v" id="consensus-disagree">—</span>
+          </div>
+        </div>
+        <div class="consensus-legend">
+          <span class="agree"><span class="swatch"></span>agreement</span>
+          <span class="disagree"><span class="swatch"></span>disagreement</span>
+        </div>
+      </div>
+
+    </aside>
+  </div>
+
+  <!-- ===== EU AI Act compliance gauge ===== -->
+  <section class="panel gauge-card stagger" style="max-width:520px; margin:0 auto;">
+    <h3 style="text-align:center;">EU AI Act compliance · Regulation (EU) 2024/1689</h3>
+    <div class="gauge">
+      <svg viewBox="0 0 100 100">
+        <!-- Background ring -->
+        <circle cx="50" cy="50" r="44" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="6"/>
+        <!-- Article 11 ring -->
+        <circle id="arc-11" cx="50" cy="50" r="44" fill="none" stroke="var(--fg-3)" stroke-width="6"
+                stroke-linecap="round"
+                stroke-dasharray="276" stroke-dashoffset="276"/>
+        <!-- Article 13 ring -->
+        <circle id="arc-13" cx="50" cy="50" r="36" fill="none" stroke="var(--fg-3)" stroke-width="6"
+                stroke-linecap="round"
+                stroke-dasharray="226" stroke-dashoffset="226"/>
+        <!-- Article 15 ring -->
+        <circle id="arc-15" cx="50" cy="50" r="28" fill="none" stroke="var(--fg-3)" stroke-width="6"
+                stroke-linecap="round"
+                stroke-dasharray="176" stroke-dashoffset="176"/>
+      </svg>
+      <div class="glow" id="gauge-glow"></div>
+      <div class="gauge-centre">
+        <div class="pct" id="gauge-pct">—</div>
+        <div class="lbl">complete</div>
+      </div>
+    </div>
+    <div class="articles">
+      <div class="article" id="article-11">
+        <span class="dot"></span>
+        <span class="name">Art. 11 — Technical documentation</span>
+        <span class="status">—</span>
+      </div>
+      <div class="article" id="article-13">
+        <span class="dot"></span>
+        <span class="name">Art. 13 — Transparency</span>
+        <span class="status">—</span>
+      </div>
+      <div class="article" id="article-15">
+        <span class="dot"></span>
+        <span class="name">Art. 15 — Accuracy &amp; robustness</span>
+        <span class="status">—</span>
+      </div>
+    </div>
+    <div id="risks-block" style="font-family:var(--mono); font-size:11px; color:var(--fg-2); margin-top:4px;"></div>
+  </section>
+
+</main>
+</div>
+
+<footer class="container">
+  <div class="row">
+    <div>Miru — saliency explainer · ቆንጆ · 根性 · 康宙 · কুঞ্জ</div>
+    <div>built on <code>POST /api/v2/explain</code></div>
+  </div>
+</footer>
+
+<script>
+"use strict";
+
+/* ============================================================
+   Configuration
+   ============================================================ */
+const CONFIG = {
+  apiBase: "/api/v2",
+  attnGridSize: 16,
+  pulseTopK: 12,         // top-K cells get a pulse particle
+  pulseDuration: 2800,   // ms — full pulse cycle
+  pulseScaleMax: 1.15,
+  rippleInterval: 1700,  // ms — agreement ripple cycle
+  rippleDisagreeInterval: 5100,  // ms — 1/3 of agreement
+  deleteSweepMs: 600,
+  staggerMs: 90,
+  scoreRollMs: 700,
+};
+
+/* ============================================================
+   DOM refs
+   ============================================================ */
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+
+const livePill = $("#live-pill");
+const liveText = $("#live-text");
+const dropZone = $("#drop-zone");
+const samplesEl = $("#samples");
+const promptEl = $("#prompt");
+const previewEl = $("#preview");
+const previewCanvas = $("#preview-canvas");
+const deleteScanline = $("#delete-scanline");
+const btnExplain = $("#btn-explain");
+const btnConsensus = $("#btn-consensus");
+const btnFidelity = $("#btn-fidelity");
+const stageEl = $("#stage");
+const stageEmpty = $("#stage-empty");
+const stageCaption = $("#stage-caption");
+const canvasBase = $("#canvas-base");
+const canvasPulse = $("#canvas-pulse");
+const canvasRipples = $("#canvas-ripples");
+const canvasConsensus = $("#canvas-consensus");
+const answerText = $("#answer-text");
+const capMethod = $("#cap-method");
+const capConf = $("#cap-conf");
+const capLatency = $("#cap-latency");
+const fidSlot = $("#fidelity-slot");
+const fidBaseline = $("#fid-baseline");
+const fidMasked = $("#fid-masked");
+const fidWarning = $("#fidelity-warning");
+const consensusEmpty = $("#consensus-empty");
+const consensusScore = $("#consensus-score");
+const consensusDisagree = $("#consensus-disagree");
+const exportBtns = $$(".export-btn");
+const exportStatus = $("#export-status");
+const arc11 = $("#arc-11");
+const arc13 = $("#arc-13");
+const arc15 = $("#arc-15");
+const gaugePct = $("#gauge-pct");
+const gaugeGlow = $("#gauge-glow");
+const article11 = $("#article-11");
+const article13 = $("#article-13");
+const article15 = $("#article-15");
+const risksBlock = $("#risks-block");
+
+/* ============================================================
+   App state
+   ============================================================ */
+const state = {
+  liveMode: false,
+  serverInfo: null,
+  currentMethod: "attention",
+  currentSample: "bright",
+  currentSaliency: null,        // 2-D array (normalised)
+  currentMaxValue: 1,
+  currentResult: null,
+  currentAnalysisId: null,
+  consensusMode: false,
+  consensusGrid: null,          // agreement grid
+  consensusDisagreeRegions: [],
+  pulseParticles: [],           // [{row, col, value, phase}]
+};
+
+/* ============================================================
+   Sample painters — reused from the eye demo, simplified.
+   ============================================================ */
+function paintSample(canvas, kind) {
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  if (kind === "bright") {
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, "#ffd66e");
+    g.addColorStop(0.45, "#ffb14a");
+    g.addColorStop(0.9, "#3a7e3a");
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    const sun = ctx.createRadialGradient(W * 0.7, H * 0.25, 0, W * 0.7, H * 0.25, W * 0.2);
+    sun.addColorStop(0, "rgba(255,255,200,0.95)");
+    sun.addColorStop(1, "rgba(255,255,200,0)");
+    ctx.fillStyle = sun;
+    ctx.beginPath(); ctx.arc(W * 0.7, H * 0.25, W * 0.2, 0, Math.PI * 2); ctx.fill();
+  } else if (kind === "dim") {
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, "#586079");
+    g.addColorStop(1, "#2a2f3e");
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    const win = ctx.createRadialGradient(W * 0.3, H * 0.4, 0, W * 0.3, H * 0.4, W * 0.5);
+    win.addColorStop(0, "rgba(220,210,180,0.55)");
+    win.addColorStop(1, "rgba(220,210,180,0)");
+    ctx.fillStyle = win; ctx.fillRect(0, 0, W, H);
+  } else if (kind === "dark") {
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, "#0a0c1a");
+    g.addColorStop(1, "#1a1424");
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    const lit = ctx.createRadialGradient(W * 0.42, H * 0.5, 0, W * 0.42, H * 0.5, W * 0.18);
+    lit.addColorStop(0, "rgba(255,200,140,0.65)");
+    lit.addColorStop(1, "rgba(255,200,140,0)");
+    ctx.fillStyle = lit; ctx.fillRect(0, 0, W, H);
+  } else if (kind === "chart") {
+    ctx.fillStyle = "#0e1018"; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#7c3aed";
+    const bars = [0.35, 0.6, 0.45, 0.85, 0.7, 0.5];
+    const bw = W * 0.10;
+    bars.forEach((v, i) => {
+      const x = W * 0.10 + i * (bw + W * 0.025);
+      const h = H * v * 0.8;
+      ctx.fillRect(x, H - h - H * 0.10, bw, h);
+    });
+    ctx.strokeStyle = "#3a4055"; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(W * 0.06, H * 0.10);
+    ctx.lineTo(W * 0.06, H * 0.90);
+    ctx.lineTo(W * 0.94, H * 0.90);
+    ctx.stroke();
+  }
+}
+
+/* ============================================================
+   PNG encoder for /api/v2/explain — needs real bytes.
+   Encode the preview canvas as a base64 PNG with Pillow-compatible
+   bytes. The browser already has PNG encoding via toDataURL.
+   ============================================================ */
+function previewAsPngB64(canvas) {
+  const dataUrl = canvas.toDataURL("image/png");
+  // strip the "data:image/png;base64," prefix
+  return dataUrl.replace(/^data:image\/png;base64,/, "");
+}
+
+/* ============================================================
+   Method selector — magnetic tabs (#5)
+   ============================================================ */
+
+const methodsEl = $("#methods");
+const indicator = $("#method-indicator");
+
+let indicatorTarget = null;   // {left, width}
+let indicatorCurrent = { left: 0, width: 0 };
+let indicatorAnimating = false;
+
+function tabsRect() {
+  return methodsEl.getBoundingClientRect();
+}
+
+function methodTabRect(tab) {
+  const t = tab.getBoundingClientRect();
+  const p = tabsRect();
+  return { left: t.left - p.left, width: t.width };
+}
+
+function snapIndicatorToActive(animate = true) {
+  const tab = methodsEl.querySelector(".tab.active");
+  if (!tab) return;
+  const r = methodTabRect(tab);
+  indicatorTarget = r;
+  if (!animate) {
+    indicatorCurrent = { ...r };
+    applyIndicator();
+  }
+  indicator.classList.add("snapped");
+  startIndicatorLoop();
+}
+
+function applyIndicator() {
+  indicator.style.left = indicatorCurrent.left + "px";
+  indicator.style.width = indicatorCurrent.width + "px";
+}
+
+/* Magnetic loop — current pulls toward target every frame.  Lerp factor
+   0.25 gives a snappy-but-magnetic feel. */
+function startIndicatorLoop() {
+  if (indicatorAnimating) return;
+  indicatorAnimating = true;
+  const step = () => {
+    if (!indicatorTarget) { indicatorAnimating = false; return; }
+    const dx = indicatorTarget.left - indicatorCurrent.left;
+    const dw = indicatorTarget.width - indicatorCurrent.width;
+    indicatorCurrent.left += dx * 0.25;
+    indicatorCurrent.width += dw * 0.25;
+    applyIndicator();
+    // Stop the loop when we're close enough.
+    if (Math.abs(dx) < 0.4 && Math.abs(dw) < 0.4) {
+      indicatorCurrent = { ...indicatorTarget };
+      applyIndicator();
+      indicatorAnimating = false;
+      return;
+    }
+    requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+methodsEl.addEventListener("mouseover", (e) => {
+  const tab = e.target.closest(".tab");
+  if (!tab) return;
+  indicator.classList.remove("snapped");
+  indicatorTarget = methodTabRect(tab);
+  startIndicatorLoop();
+});
+
+methodsEl.addEventListener("mouseleave", () => {
+  // Return to active tab when pointer leaves the strip.
+  const tab = methodsEl.querySelector(".tab.active");
+  if (tab) {
+    indicatorTarget = methodTabRect(tab);
+    indicator.classList.add("snapped");
+    startIndicatorLoop();
+  }
+});
+
+methodsEl.addEventListener("click", (e) => {
+  const tab = e.target.closest(".tab");
+  if (!tab) return;
+  $$(".methods .tab").forEach(t => t.classList.remove("active"));
+  tab.classList.add("active");
+  const method = tab.dataset.method;
+  if (method === state.currentMethod) return;
+  state.currentMethod = method;
+  snapIndicatorToActive();
+  // Cross-fade the saliency layer when method changes mid-analysis.
+  if (state.currentSaliency) {
+    canvasBase.classList.add("fading");
+    setTimeout(() => {
+      runExplanation();   // re-runs with the new method
+    }, 280);
+  }
+});
+
+window.addEventListener("resize", () => snapIndicatorToActive(false));
+
+/* ============================================================
+   Saliency rendering — base layer (jet → konjo palette)
+   ============================================================ */
+
+function interpKonjo(t) {
+  // #7c3aed (124, 58, 237) → #e0d9ff (224, 217, 255)
+  t = Math.max(0, Math.min(1, t));
+  const r = Math.round(124 + t * (224 - 124));
+  const g = Math.round(58 + t * (217 - 58));
+  const b = Math.round(237 + t * (255 - 237));
+  return [r, g, b];
+}
+
+function renderSaliencyBase(grid) {
+  const ctx = canvasBase.getContext("2d");
+  const W = canvasBase.width, H = canvasBase.height;
+  const G = grid.length;
+  let maxV = 0;
+  for (const row of grid) for (const v of row) if (v > maxV) maxV = v;
+  if (maxV <= 0) maxV = 1;
+
+  const img = ctx.createImageData(W, H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const fx = (x / W) * (G - 1);
+      const fy = (y / H) * (G - 1);
+      const x0 = Math.floor(fx), x1 = Math.min(G - 1, x0 + 1);
+      const y0 = Math.floor(fy), y1 = Math.min(G - 1, y0 + 1);
+      const dx = fx - x0, dy = fy - y0;
+      const v00 = grid[y0][x0], v01 = grid[y0][x1];
+      const v10 = grid[y1][x0], v11 = grid[y1][x1];
+      const top = v00 * (1 - dx) + v01 * dx;
+      const bot = v10 * (1 - dx) + v11 * dx;
+      const w = (top * (1 - dy) + bot * dy) / maxV;
+      const [r, g, b] = interpKonjo(w);
+      const i = (y * W + x) * 4;
+      // Apply gamma for visible contrast plus background-fade where saliency is low.
+      const alpha = Math.pow(w, 0.8);
+      img.data[i]     = r;
+      img.data[i + 1] = g;
+      img.data[i + 2] = b;
+      img.data[i + 3] = Math.round(alpha * 230);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  canvasBase.classList.remove("fading");
+  stageEmpty.classList.add("hidden");
+}
+
+function clearStage() {
+  canvasBase.getContext("2d").clearRect(0, 0, canvasBase.width, canvasBase.height);
+  canvasPulse.getContext("2d").clearRect(0, 0, canvasPulse.width, canvasPulse.height);
+  canvasRipples.getContext("2d").clearRect(0, 0, canvasRipples.width, canvasRipples.height);
+  stageEmpty.classList.remove("hidden");
+  state.pulseParticles = [];
+}
+
+/* ============================================================
+   Saliency heat pulse (#1) — top-K cells emit staggered glows
+   ============================================================ */
+
+function buildPulseParticles(grid) {
+  const G = grid.length;
+  const flat = [];
+  for (let i = 0; i < G; i++) {
+    for (let j = 0; j < G; j++) flat.push({ row: i, col: j, value: grid[i][j] });
+  }
+  flat.sort((a, b) => b.value - a.value);
+  const top = flat.slice(0, CONFIG.pulseTopK);
+  return top.map((c, idx) => ({
+    ...c,
+    // Phase offset by salience rank — most salient pulses first.
+    phase: (idx / CONFIG.pulseTopK) * Math.PI * 2,
+  }));
+}
+
+let pulseRAF = null;
+function startPulseLoop() {
+  if (pulseRAF) return;
+  const tickFn = (now) => {
+    drawPulse(now);
+    pulseRAF = requestAnimationFrame(tickFn);
+  };
+  pulseRAF = requestAnimationFrame(tickFn);
+}
+
+function drawPulse(now) {
+  const ctx = canvasPulse.getContext("2d");
+  const W = canvasPulse.width, H = canvasPulse.height;
+  ctx.clearRect(0, 0, W, H);
+  if (!state.pulseParticles.length) return;
+
+  const G = state.currentSaliency ? state.currentSaliency.length : CONFIG.attnGridSize;
+  const cellW = W / G;
+  const cellH = H / G;
+
+  for (const p of state.pulseParticles) {
+    // Normalised pulse phase ∈ [0, 1).
+    const cycle = ((now / CONFIG.pulseDuration) * 2 * Math.PI + p.phase) % (2 * Math.PI);
+    const t = (Math.sin(cycle) + 1) / 2;     // 0 → 1 → 0
+    const scale = 1.0 + t * (CONFIG.pulseScaleMax - 1.0);
+    const radius = Math.min(cellW, cellH) * 0.65 * scale;
+    const norm = p.value / state.currentMaxValue;
+    const [r, g, b] = interpKonjo(norm);
+    const cx = (p.col + 0.5) * cellW;
+    const cy = (p.row + 0.5) * cellH;
+
+    // Radial-gradient halo
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+    grad.addColorStop(0,   `rgba(${r}, ${g}, ${b}, ${0.6 * t + 0.15 * norm})`);
+    grad.addColorStop(0.5, `rgba(${r}, ${g}, ${b}, ${0.25 * t + 0.05 * norm})`);
+    grad.addColorStop(1,   `rgba(${r}, ${g}, ${b}, 0)`);
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+/* ============================================================
+   Consensus agreement ripple (#3)
+   ============================================================ */
+
+const consensusRipples = [];   // active ripple animations on the stage
+const consensusGridRipples = []; // ripples on the small consensus grid
+
+function renderConsensusGrid(agreementGrid, disagreementRegions) {
+  const ctx = canvasConsensus.getContext("2d");
+  const W = canvasConsensus.width, H = canvasConsensus.height;
+  ctx.clearRect(0, 0, W, H);
+  consensusEmpty.classList.add("hidden");
+  const G = agreementGrid.length;
+  const cellW = W / G;
+  const cellH = H / G;
+  // Base agreement render.
+  for (let i = 0; i < G; i++) {
+    for (let j = 0; j < G; j++) {
+      const v = agreementGrid[i][j];
+      if (v <= 0) continue;
+      const [r, g, b] = interpKonjo(v);
+      ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${v * 0.7})`;
+      ctx.fillRect(j * cellW, i * cellH, cellW + 1, cellH + 1);
+    }
+  }
+  // Mark disagreement cells with subtle red dots.
+  ctx.fillStyle = "rgba(239, 68, 68, 0.55)";
+  for (const [row, col] of disagreementRegions.slice(0, 12)) {
+    const cx = (col + 0.5) * cellW;
+    const cy = (row + 0.5) * cellH;
+    ctx.beginPath();
+    ctx.arc(cx, cy, Math.min(cellW, cellH) * 0.18, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // Build ripple schedule.
+  scheduleConsensusRipples(agreementGrid, disagreementRegions);
+}
+
+function scheduleConsensusRipples(agreementGrid, disagreementRegions) {
+  consensusRipples.length = 0;
+  consensusGridRipples.length = 0;
+  const G = agreementGrid.length;
+  // Agreement cells with value > 0.8 emit ripples at full frequency.
+  for (let i = 0; i < G; i++) {
+    for (let j = 0; j < G; j++) {
+      if (agreementGrid[i][j] > 0.8) {
+        consensusRipples.push({
+          row: i, col: j, kind: "agree",
+          interval: CONFIG.rippleInterval,
+          phase: Math.random() * CONFIG.rippleInterval,
+        });
+        consensusGridRipples.push({
+          row: i, col: j, kind: "agree",
+          interval: CONFIG.rippleInterval,
+          phase: Math.random() * CONFIG.rippleInterval,
+        });
+      }
+    }
+  }
+  // Disagreement regions ripple at 1/3 frequency, capped.
+  for (const [row, col] of disagreementRegions.slice(0, 6)) {
+    consensusRipples.push({
+      row, col, kind: "disagree",
+      interval: CONFIG.rippleDisagreeInterval,
+      phase: Math.random() * CONFIG.rippleDisagreeInterval,
+    });
+    consensusGridRipples.push({
+      row, col, kind: "disagree",
+      interval: CONFIG.rippleDisagreeInterval,
+      phase: Math.random() * CONFIG.rippleDisagreeInterval,
+    });
+  }
+  // Show / hide stage ripple layer based on whether we have any.
+  canvasRipples.classList.toggle("live", consensusRipples.length > 0);
+  if (consensusRipples.length > 0 && !ripplesRAF) startRippleLoop();
+}
+
+let ripplesRAF = null;
+function startRippleLoop() {
+  const step = (now) => {
+    drawRipples(now);
+    if (consensusRipples.length || consensusGridRipples.length) {
+      ripplesRAF = requestAnimationFrame(step);
+    } else {
+      ripplesRAF = null;
+    }
+  };
+  ripplesRAF = requestAnimationFrame(step);
+}
+
+function drawRipples(now) {
+  // Stage ripples (large canvas).
+  drawRippleSet(canvasRipples, consensusRipples, state.currentSaliency?.length || CONFIG.attnGridSize, now, 1.0);
+  // Consensus grid mini-ripples.
+  drawRippleSet(canvasConsensus, consensusGridRipples, state.consensusGrid?.length || CONFIG.attnGridSize, now, 0.6,
+                /*clearFirst=*/false, state.consensusGrid, state.consensusDisagreeRegions);
+}
+
+function drawRippleSet(canvas, ripples, G, now, sizeFactor, clearFirst = true, baseGrid = null, baseDisagree = null) {
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  if (clearFirst) ctx.clearRect(0, 0, W, H);
+  else {
+    // Redraw the static base agreement render under the ripples so the
+    // ripples don't visually "erase" it.
+    ctx.clearRect(0, 0, W, H);
+    if (baseGrid) {
+      const cellW = W / baseGrid.length;
+      const cellH = H / baseGrid.length;
+      for (let i = 0; i < baseGrid.length; i++) {
+        for (let j = 0; j < baseGrid.length; j++) {
+          const v = baseGrid[i][j];
+          if (v <= 0) continue;
+          const [r, g, b] = interpKonjo(v);
+          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${v * 0.7})`;
+          ctx.fillRect(j * cellW, i * cellH, cellW + 1, cellH + 1);
+        }
+      }
+      if (baseDisagree) {
+        ctx.fillStyle = "rgba(239, 68, 68, 0.55)";
+        for (const [row, col] of baseDisagree.slice(0, 12)) {
+          const cx = (col + 0.5) * cellW;
+          const cy = (row + 0.5) * cellH;
+          ctx.beginPath();
+          ctx.arc(cx, cy, Math.min(cellW, cellH) * 0.18, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
+  }
+  const cellW = W / G;
+  const cellH = H / G;
+  const maxR = Math.max(W, H) * 0.18 * sizeFactor;
+  for (const rip of ripples) {
+    const t = ((now + rip.phase) % rip.interval) / rip.interval;
+    if (t >= 1) continue;
+    const radius = t * maxR;
+    const alpha = (1 - t) * (rip.kind === "agree" ? 0.55 : 0.45);
+    const stroke = rip.kind === "agree"
+      ? `rgba(124, 58, 237, ${alpha})`
+      : `rgba(239, 68, 68, ${alpha})`;
+    const cx = (rip.col + 0.5) * cellW;
+    const cy = (rip.row + 0.5) * cellH;
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = rip.kind === "agree" ? 2 : 1.5;
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+}
+
+/* ============================================================
+   EU AI Act compliance gauge (#4)
+   ============================================================ */
+
+const ARC_CIRCUMFERENCES = {
+  arc11: 2 * Math.PI * 44,
+  arc13: 2 * Math.PI * 36,
+  arc15: 2 * Math.PI * 28,
+};
+
+function statusFill(status) {
+  // Map ok / warn / miss → fill fraction + colour.
+  if (status === "ok")     return { frac: 1.0, color: "var(--green)" };
+  if (status === "warn")   return { frac: 0.5, color: "var(--amber)" };
+  if (status === "miss" || status === "incomplete")
+                           return { frac: 0.25, color: "var(--red)" };
+  return { frac: 0, color: "var(--fg-3)" };
+}
+
+function setArc(circleEl, statusKey, c) {
+  const { frac, color } = statusFill(statusKey);
+  circleEl.style.stroke = color;
+  // Set dasharray=full, animate offset from full → (1-frac)*full.
+  const target = c * (1 - frac);
+  // Force the animation: set to full first, then in next frame to target.
+  circleEl.style.strokeDasharray = c.toFixed(2);
+  circleEl.style.strokeDashoffset = c.toFixed(2);
+  circleEl.style.transition = "stroke-dashoffset 1.2s cubic-bezier(0.23, 1, 0.32, 1)";
+  requestAnimationFrame(() => {
+    circleEl.style.strokeDashoffset = target.toFixed(2);
+  });
+  return frac;
+}
+
+function updateGauge(complianceStatus) {
+  if (!complianceStatus) {
+    setArc(arc11, "unknown", ARC_CIRCUMFERENCES.arc11);
+    setArc(arc13, "unknown", ARC_CIRCUMFERENCES.arc13);
+    setArc(arc15, "unknown", ARC_CIRCUMFERENCES.arc15);
+    gaugePct.textContent = "—";
+    gaugeGlow.style.setProperty("--glow-alpha", "0");
+    return;
+  }
+  const a11 = complianceStatus.article_11?.status;
+  const a13 = complianceStatus.article_13?.status;
+  const a15 = complianceStatus.article_15?.status;
+  const f11 = setArc(arc11, a11, ARC_CIRCUMFERENCES.arc11);
+  const f13 = setArc(arc13, a13, ARC_CIRCUMFERENCES.arc13);
+  const f15 = setArc(arc15, a15, ARC_CIRCUMFERENCES.arc15);
+  const ratio = (f11 + f13 + f15) / 3;
+  // Animate the central percent number.
+  animateCounter(gaugePct, Math.round(ratio * 100), "%", 1200);
+  gaugeGlow.style.setProperty("--glow-alpha", (ratio * 0.45).toFixed(3));
+
+  // Article rows
+  const mapStatus = (s) =>
+    s === "ok" ? "ok" : s === "warn" ? "warn" : "miss";
+  const setRow = (el, key, label, statusObj) => {
+    const cls = mapStatus(statusObj?.status);
+    el.classList.remove("ok", "warn", "miss");
+    el.classList.add(cls);
+    el.querySelector(".status").textContent = statusObj?.status || "—";
+  };
+  setRow(article11, "art11", "Art. 11", complianceStatus.article_11);
+  setRow(article13, "art13", "Art. 13", complianceStatus.article_13);
+  setRow(article15, "art15", "Art. 15", complianceStatus.article_15);
+}
+
+function animateCounter(el, target, suffix = "", duration = 700) {
+  const start = parseInt(el.textContent) || 0;
+  const t0 = performance.now();
+  const step = (now) => {
+    const t = Math.min(1, (now - t0) / duration);
+    const eased = 1 - Math.pow(1 - t, 5);
+    const v = Math.round(start + (target - start) * eased);
+    el.textContent = v + suffix;
+    if (t < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+/* ============================================================
+   Slot-machine fidelity score (#2)
+   ============================================================ */
+
+function setSlotValue(target) {
+  // target ∈ [0, 1] → display "0.xxx" with three decimals.
+  const clamped = Math.max(0, Math.min(0.999, target));
+  const digits = clamped.toFixed(3);   // e.g. "0.823"
+  // digits[0] is "0", digits[1] is ".", then three decimal digits.
+  const digitEls = fidSlot.querySelectorAll(".digit");
+  // digitEls = [units, tenths, hundredths, thousandths] (4 reels)
+  const finalDigits = [
+    digits[0],
+    digits[2],
+    digits[3],
+    digits[4],
+  ];
+  digitEls.forEach((d, idx) => {
+    rollDigit(d, parseInt(finalDigits[idx]));
+  });
+  // Recolour the slot.
+  fidSlot.classList.remove("low", "mid", "high");
+  if (target < 0.4) fidSlot.classList.add("low");
+  else if (target < 0.7) fidSlot.classList.add("mid");
+  else fidSlot.classList.add("high");
+  fidWarning.classList.toggle("visible", target < 0.5);
+}
+
+function rollDigit(digitEl, finalValue) {
+  const reel = digitEl.querySelector(".reel");
+  // Build the reel: 0..9 repeated 4 times so the roll animates through
+  // multiple cycles before landing.
+  const cycles = 4;
+  const seq = [];
+  for (let i = 0; i < cycles; i++) {
+    for (let d = 0; d <= 9; d++) seq.push(d);
+  }
+  seq.push(finalValue);     // final value at the end
+  reel.innerHTML = seq.map(d => `<span>${d}</span>`).join("");
+  // Compute target translate (each digit is 38px tall).
+  const targetIdx = seq.length - 1;
+  reel.style.transition = "none";
+  reel.style.transform = "translateY(0px)";
+  // Force reflow so the transition resets.
+  void reel.offsetWidth;
+  reel.style.transition = `transform ${CONFIG.scoreRollMs}ms cubic-bezier(0.22, 1, 0.36, 1)`;
+  reel.style.transform = `translateY(${-targetIdx * 38}px)`;
+}
+
+/* ============================================================
+   Deletion-test masking animation (#2)
+   ============================================================ */
+
+let deletionSweepActive = false;
+function runDeletionSweep() {
+  if (deletionSweepActive) return Promise.resolve();
+  deletionSweepActive = true;
+  deleteScanline.classList.add("live");
+  return new Promise((resolve) => {
+    const ctx = previewCanvas.getContext("2d");
+    const W = previewCanvas.width, H = previewCanvas.height;
+    // Snapshot the current image; we'll overlay an orange flash then
+    // settle to grey behind the scanline.
+    const original = ctx.getImageData(0, 0, W, H);
+    const t0 = performance.now();
+    const tick = (now) => {
+      const t = Math.min(1, (now - t0) / CONFIG.deleteSweepMs);
+      const scanY = t * H;
+      // Move the visible scanline.
+      deleteScanline.style.top = (scanY / H * 100).toFixed(1) + "%";
+      // Paint pixels above the scanline:
+      //  - flash to orange in a transition band (~10% of H)
+      //  - settle to grey beyond
+      const band = H * 0.08;
+      const orig = original.data;
+      const out = ctx.getImageData(0, 0, W, H);
+      const od = out.data;
+      for (let y = 0; y < scanY; y++) {
+        const distFromScan = scanY - y;
+        let fade;
+        if (distFromScan < band) {
+          // In the flash band: blend toward orange.
+          fade = distFromScan / band;
+          for (let x = 0; x < W; x++) {
+            const i = (y * W + x) * 4;
+            const oR = orig[i], oG = orig[i+1], oB = orig[i+2];
+            // Mix with orange (251, 146, 60).
+            const flashMix = 1 - Math.abs(0.5 - fade) * 2;
+            const baseGrey = 90;
+            const mixedR = Math.round(oR * (1 - fade) + (251 * flashMix + baseGrey * (1 - flashMix)) * fade);
+            const mixedG = Math.round(oG * (1 - fade) + (146 * flashMix + baseGrey * (1 - flashMix)) * fade);
+            const mixedB = Math.round(oB * (1 - fade) + (60  * flashMix + baseGrey * (1 - flashMix)) * fade);
+            od[i] = mixedR; od[i+1] = mixedG; od[i+2] = mixedB;
+          }
+        } else {
+          // Past the band — full grey.
+          for (let x = 0; x < W; x++) {
+            const i = (y * W + x) * 4;
+            od[i] = 95; od[i+1] = 95; od[i+2] = 100;
+          }
+        }
+      }
+      ctx.putImageData(out, 0, 0);
+      if (t < 1) {
+        requestAnimationFrame(tick);
+      } else {
+        deletionSweepActive = false;
+        // Restore the original image after a brief hold.
+        setTimeout(() => {
+          deleteScanline.classList.remove("live");
+          ctx.putImageData(original, 0, 0);
+          resolve();
+        }, 400);
+      }
+    };
+    requestAnimationFrame(tick);
+  });
+}
+
+/* ============================================================
+   Export ripple + scale-bounce (#6)
+   ============================================================ */
+
+exportBtns.forEach((btn) => {
+  btn.addEventListener("click", (e) => {
+    if (btn.disabled) return;
+    // Spawn ripple from click point.
+    const rect = btn.getBoundingClientRect();
+    const r = document.createElement("span");
+    r.className = "ripple";
+    r.style.left = (e.clientX - rect.left) + "px";
+    r.style.top = (e.clientY - rect.top) + "px";
+    r.style.transform = "translate(-50%, -50%)";
+    btn.appendChild(r);
+    setTimeout(() => r.remove(), 420);
+    // Scale-bounce
+    btn.animate(
+      [
+        { transform: "scale(1.0)" },
+        { transform: "scale(1.12)", offset: 0.5 },
+        { transform: "scale(1.0)" },
+      ],
+      { duration: 320, easing: "cubic-bezier(0.34, 1.56, 0.64, 1)" }
+    );
+    triggerExport(btn.dataset.fmt);
+  });
+});
+
+async function triggerExport(fmt) {
+  if (!state.currentAnalysisId) return;
+  exportStatus.textContent = `requesting ${fmt}…`;
+  try {
+    const resp = await fetch(`${CONFIG.apiBase}/analysis/${state.currentAnalysisId}/export?format=${fmt}`);
+    if (!resp.ok) {
+      exportStatus.textContent = `${fmt}: HTTP ${resp.status}`;
+      return;
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${state.currentAnalysisId}.${fmt}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    exportStatus.textContent = `downloaded ${fmt} · ${(blob.size / 1024).toFixed(1)} KB`;
+  } catch (err) {
+    exportStatus.textContent = `${fmt}: ${err.message}`;
+  }
+}
+
+/* ============================================================
+   Scroll-entrance stagger (#7)
+   ============================================================ */
+
+(function setupStagger() {
+  const elements = $$(".stagger");
+  let staggerIndex = 0;
+  const io = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (entry.isIntersecting) {
+        const delay = staggerIndex++ * CONFIG.staggerMs;
+        setTimeout(() => entry.target.classList.add("enter"), delay);
+        io.unobserve(entry.target);
+      }
+    }
+  }, { threshold: 0.08 });
+  elements.forEach((el) => io.observe(el));
+})();
+
+/* ============================================================
+   Live mode + main analysis flow
+   ============================================================ */
+
+async function checkServer() {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 1500);
+    const resp = await fetch(`${CONFIG.apiBase}/health`, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!resp.ok) throw new Error("not ok");
+    const data = await resp.json();
+    state.liveMode = true;
+    state.serverInfo = data;
+    livePill.classList.add("connected");
+    liveText.innerHTML = `✓ live · v${data.version} · ${data.methods.join("·")}`;
+  } catch (err) {
+    state.liveMode = false;
+    livePill.classList.remove("connected");
+    liveText.innerHTML = `<span style="color:var(--amber)">offline</span> · run <code>python demo/server.py</code>`;
+  }
+}
+
+async function runExplanation() {
+  if (!state.liveMode) {
+    answerText.textContent = "live server unavailable — run python demo/server.py";
+    return;
+  }
+  btnExplain.disabled = true;
+  btnFidelity.disabled = true;
+
+  const imageB64 = previewAsPngB64(previewCanvas);
+  const prompt = promptEl.value.trim() || "Where is the salient region?";
+  const method = state.currentMethod;
+
+  try {
+    if (state.consensusMode) {
+      await runConsensus(imageB64, prompt);
+    } else {
+      await runSingleMethod(imageB64, prompt, method);
+    }
+  } catch (err) {
+    answerText.textContent = "error: " + err.message;
+  } finally {
+    btnExplain.disabled = false;
+    btnFidelity.disabled = !state.currentAnalysisId;
+    exportBtns.forEach((b) => b.disabled = !state.currentAnalysisId);
+  }
+}
+
+async function runSingleMethod(imageB64, prompt, method) {
+  const resp = await fetch(`${CONFIG.apiBase}/explain?fidelity=false`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      image_b64: imageB64, model_name: "mock", method,
+      question: prompt, top_k: 5,
+    }),
+  });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const data = await resp.json();
+  applySingleResult(data);
+}
+
+function applySingleResult(data) {
+  state.currentResult = data;
+  state.currentAnalysisId = data.analysis_id;
+  state.currentSaliency = data.attention_grid;
+  let maxV = 0;
+  for (const row of data.attention_grid) for (const v of row) if (v > maxV) maxV = v;
+  state.currentMaxValue = maxV || 1;
+  state.pulseParticles = buildPulseParticles(data.attention_grid);
+  renderSaliencyBase(data.attention_grid);
+  startPulseLoop();
+  // Caption + answer
+  stageCaption.hidden = false;
+  capMethod.textContent = data.method;
+  capConf.textContent = data.confidence.toFixed(3);
+  capLatency.textContent = data.latency_ms.toFixed(1) + " ms";
+  answerText.textContent = data.answer;
+  // Reset fidelity slot until the user runs the deletion test.
+  setSlotValue(0);
+  fidBaseline.textContent = data.confidence.toFixed(3);
+  fidMasked.textContent = "—";
+  // Wipe consensus visuals.
+  consensusRipples.length = 0;
+  canvasRipples.classList.remove("live");
+  state.consensusGrid = null;
+  // Fetch the EU AI Act report so the gauge updates.
+  refreshComplianceGauge(data.analysis_id);
+}
+
+async function runConsensus(imageB64, prompt) {
+  const methods = ["attention", "gradcam", "lime"];
+  const resp = await fetch(`${CONFIG.apiBase}/explain/consensus`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      image_b64: imageB64, model_name: "mock", methods,
+      question: prompt, top_k: 5, top_pct: 0.20,
+      n_samples: 24, n_segments: 16, occlusion_grid: 6,
+    }),
+  });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const data = await resp.json();
+  // Render the first method's heatmap on the stage as the primary.
+  const primary = data.per_method[0];
+  state.currentResult = primary;
+  state.currentAnalysisId = null;  // consensus doesn't return one yet
+  state.currentSaliency = primary.attention_grid;
+  let maxV = 0;
+  for (const row of primary.attention_grid) for (const v of row) if (v > maxV) maxV = v;
+  state.currentMaxValue = maxV || 1;
+  state.pulseParticles = buildPulseParticles(primary.attention_grid);
+  renderSaliencyBase(primary.attention_grid);
+  startPulseLoop();
+  stageCaption.hidden = false;
+  capMethod.textContent = data.methods.join("+");
+  capConf.textContent = data.consensus_score.toFixed(3);
+  capLatency.textContent = data.latency_ms.toFixed(1) + " ms";
+  answerText.textContent = data.answer;
+  // Render agreement grid + start ripples on both canvases.
+  state.consensusGrid = data.agreement_grid;
+  state.consensusDisagreeRegions = data.disagreement_regions;
+  renderConsensusGrid(data.agreement_grid, data.disagreement_regions);
+  consensusScore.textContent = data.consensus_score.toFixed(3);
+  consensusDisagree.textContent = data.disagreement_regions.length;
+}
+
+async function refreshComplianceGauge(analysisId) {
+  if (!analysisId) {
+    updateGauge(null);
+    risksBlock.textContent = "";
+    return;
+  }
+  try {
+    const resp = await fetch(`${CONFIG.apiBase}/report/${analysisId}/eu_ai_act`);
+    if (!resp.ok) {
+      updateGauge(null);
+      risksBlock.textContent = "compliance report unavailable";
+      return;
+    }
+    const report = await resp.json();
+    updateGauge(report.compliance_status);
+    const risks = report.article_15?.detected_risks || [];
+    risksBlock.textContent = risks.length
+      ? "⚠ " + risks.join("  ·  ")
+      : "no risks detected by the harness";
+  } catch (err) {
+    updateGauge(null);
+    risksBlock.textContent = "report fetch failed";
+  }
+}
+
+/* ============================================================
+   Drop / sample / consensus / fidelity wiring
+   ============================================================ */
+
+dropZone.addEventListener("click", () => {
+  const inp = document.createElement("input");
+  inp.type = "file"; inp.accept = "image/*";
+  inp.addEventListener("change", () => {
+    if (inp.files && inp.files[0]) loadFile(inp.files[0]);
+  });
+  inp.click();
+});
+dropZone.addEventListener("dragover", (e) => { e.preventDefault(); dropZone.classList.add("over"); });
+dropZone.addEventListener("dragleave", () => dropZone.classList.remove("over"));
+dropZone.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dropZone.classList.remove("over");
+  const f = e.dataTransfer.files[0];
+  if (f && f.type.startsWith("image/")) loadFile(f);
+});
+
+function loadFile(file) {
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const img = new Image();
+    img.onload = () => {
+      const ctx = previewCanvas.getContext("2d");
+      ctx.fillStyle = "#000"; ctx.fillRect(0, 0, previewCanvas.width, previewCanvas.height);
+      ctx.drawImage(img, 0, 0, previewCanvas.width, previewCanvas.height);
+      previewEl.classList.add("visible");
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+samplesEl.addEventListener("click", (e) => {
+  const chip = e.target.closest(".sample-chip");
+  if (!chip) return;
+  $$(".sample-chip").forEach((c) => c.classList.remove("active"));
+  chip.classList.add("active");
+  paintSample(previewCanvas, chip.dataset.sample);
+  previewEl.classList.add("visible");
+  state.currentSample = chip.dataset.sample;
+});
+
+btnExplain.addEventListener("click", () => runExplanation());
+
+btnConsensus.addEventListener("click", () => {
+  state.consensusMode = !state.consensusMode;
+  btnConsensus.classList.toggle("active", state.consensusMode);
+});
+
+btnFidelity.addEventListener("click", async () => {
+  if (!state.currentResult) return;
+  btnFidelity.disabled = true;
+  // Concurrent animation + API call.
+  const sweep = runDeletionSweep();
+  // We don't have a dedicated fidelity-only endpoint — re-run /explain
+  // with ?fidelity=true to get the deletion-test score.
+  const imageB64 = previewAsPngB64(previewCanvas);
+  const promptVal = promptEl.value.trim() || "Where is the salient region?";
+  try {
+    const resp = await fetch(`${CONFIG.apiBase}/explain?fidelity=true`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        image_b64: imageB64, model_name: "mock", method: state.currentMethod,
+        question: promptVal, top_k: 5,
+      }),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    await sweep;
+    if (data.fidelity) {
+      setSlotValue(data.fidelity.fidelity_score);
+      fidBaseline.textContent = data.fidelity.baseline_confidence.toFixed(3);
+      fidMasked.textContent = data.fidelity.masked_confidence.toFixed(3);
+      // Refresh the compliance gauge — fidelity is now stored.
+      refreshComplianceGauge(data.analysis_id);
+      state.currentAnalysisId = data.analysis_id;
+      exportBtns.forEach((b) => b.disabled = false);
+    }
+  } catch (err) {
+    answerText.textContent = "fidelity error: " + err.message;
+  } finally {
+    btnFidelity.disabled = false;
+  }
+});
+
+/* ============================================================
+   Init
+   ============================================================ */
+
+(function init() {
+  // Paint default sample so the user sees something.
+  paintSample(previewCanvas, "bright");
+  previewEl.classList.add("visible");
+  // Set up method indicator after layout settles.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => snapIndicatorToActive(false));
+  });
+  // Ping the server.
+  checkServer();
+  // Initial gauge state (empty rings).
+  updateGauge(null);
+})();
+</script>
+</body>
+</html>

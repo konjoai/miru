@@ -146,6 +146,35 @@ def visual():
     return FileResponse(_DEMO_DIR / "visual.html")
 
 
+@app.get("/explain.html", include_in_schema=False)
+@app.get("/explain", include_in_schema=False)
+def explain_page():
+    """Saliency-explainer demo at /explain or /explain.html.
+
+    The page calls the deployable explainability API mounted below at
+    /api/v2/* (POST /api/v2/explain, /api/v2/explain/consensus,
+    GET /api/v2/report/{id}/eu_ai_act, /api/v2/analysis/{id}/export).
+    """
+    return FileResponse(_DEMO_DIR / "explain.html")
+
+
+# ---------------------------------------------------------------------------
+# Deployable explainability API mount
+# ---------------------------------------------------------------------------
+# The api/main.py module is its own FastAPI app with /health, /methods,
+# /explain, /explain/consensus, /benchmark, /compare, /report/{id}/...,
+# /analysis/{id}/...  Mounting it under /api/v2 lets the explain demo
+# share an origin with the live endpoints (no CORS) while keeping the
+# existing /api/* routes (which the eye demo uses) untouched.
+try:
+    from api.main import app as _explain_api_app
+
+    app.mount("/api/v2", _explain_api_app)
+except ImportError:
+    # api/main.py is optional — the eye demo still works without it.
+    pass
+
+
 # ---------------------------------------------------------------------------
 # /api/health
 # ---------------------------------------------------------------------------
