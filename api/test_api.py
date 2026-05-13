@@ -358,3 +358,256 @@ def test_methods_lists_all_four_as_implemented(client: TestClient) -> None:
     assert statuses["lime"] == "implemented"
     assert statuses["gradcam"] == "implemented"
     assert statuses["shap"] == "implemented"
+
+
+# ===========================================================================
+# Phase 15 — P1 critical features: fidelity, consensus, EU AI Act, export
+# ===========================================================================
+
+
+@pytest.fixture
+def record_dir(tmp_path, monkeypatch):
+    """Enable recording into an isolated tmp directory for one test.
+
+    The api/main.py endpoints look records up by `MIRU_RECORD_PATH`; we
+    point that at tmp_path and flip MIRU_RECORD on so /explain persists.
+    """
+    target = tmp_path / "traces"
+    monkeypatch.setenv("MIRU_RECORD", "1")
+    monkeypatch.setenv("MIRU_RECORD_PATH", str(target))
+    from miru.recorder import reset_recorder
+
+    reset_recorder()
+    yield target
+    reset_recorder()
+
+
+def test_explain_returns_analysis_id_without_fidelity_block_by_default(
+    client: TestClient, synthetic_png_b64: str, record_dir,
+) -> None:
+    """Default /explain returns an analysis_id but no fidelity block."""
+    resp = client.post(
+        "/explain",
+        json={
+            "image_b64": synthetic_png_b64,
+            "model_name": "mock",
+            "method": "attention",
+            "question": "what?",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert isinstance(body["analysis_id"], str) and body["analysis_id"]
+    assert body.get("fidelity") is None
+
+
+def test_explain_with_fidelity_query_includes_fidelity_block(
+    client: TestClient, synthetic_png_b64: str, record_dir,
+) -> None:
+    resp = client.post(
+        "/explain?fidelity=true",
+        json={
+            "image_b64": synthetic_png_b64,
+            "model_name": "mock",
+            "method": "attention",
+            "question": "what?",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["fidelity"] is not None
+    f = body["fidelity"]
+    for k in ("fidelity_score", "baseline_confidence", "masked_confidence", "k_pct", "low_fidelity"):
+        assert k in f
+    assert 0.0 <= f["fidelity_score"] <= 1.0
+
+
+# ----- consensus ---------------------------------------------------------
+
+
+def test_consensus_happy_path(
+    client: TestClient, synthetic_png_b64: str,
+) -> None:
+    resp = client.post(
+        "/explain/consensus",
+        json={
+            "image_b64": synthetic_png_b64,
+            "model_name": "mock",
+            "methods": ["attention", "lime"],
+            "question": "what?",
+            "n_samples": 8,
+            "n_segments": 9,
+            "top_pct": 0.25,
+            "top_k": 3,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["methods"] == ["attention", "lime"]
+    assert len(body["per_method"]) == 2
+    assert 0.0 <= body["consensus_score"] <= 1.0
+    # Grid must be square and float-valued in [0, 1].
+    grid = body["agreement_grid"]
+    assert len(grid) == len(grid[0])
+    flat = [v for row in grid for v in row]
+    assert all(0.0 <= v <= 1.0 for v in flat)
+
+
+def test_consensus_rejects_fewer_than_two_methods(
+    client: TestClient, synthetic_png_b64: str,
+) -> None:
+    resp = client.post(
+        "/explain/consensus",
+        json={
+            "image_b64": synthetic_png_b64,
+            "model_name": "mock",
+            "methods": ["attention"],
+            "question": "what?",
+        },
+    )
+    assert resp.status_code == 400
+
+
+def test_consensus_rejects_duplicate_methods(
+    client: TestClient, synthetic_png_b64: str,
+) -> None:
+    resp = client.post(
+        "/explain/consensus",
+        json={
+            "image_b64": synthetic_png_b64,
+            "model_name": "mock",
+            "methods": ["attention", "attention"],
+            "question": "what?",
+        },
+    )
+    assert resp.status_code == 400
+
+
+def test_consensus_rejects_roadmap_or_unknown_method(
+    client: TestClient, synthetic_png_b64: str,
+) -> None:
+    """Consensus must reject methods that aren't in IMPLEMENTED_METHODS.
+
+    Picks a roadmap method if one exists, otherwise falls back to a
+    genuinely unknown name so the test stays green as methods graduate
+    from roadmap → implemented.
+    """
+    bad_method = ROADMAP_METHODS[0] if ROADMAP_METHODS else "totally-bogus"
+    resp = client.post(
+        "/explain/consensus",
+        json={
+            "image_b64": synthetic_png_b64,
+            "model_name": "mock",
+            "methods": ["attention", bad_method],
+            "question": "what?",
+        },
+    )
+    assert resp.status_code == 400
+
+
+# ----- EU AI Act report --------------------------------------------------
+
+
+def test_eu_ai_act_report_returns_404_for_unknown_id(client: TestClient) -> None:
+    resp = client.get("/report/zz-not-a-real-id-12345/eu_ai_act")
+    assert resp.status_code == 404
+
+
+def test_eu_ai_act_report_happy_path(
+    client: TestClient, synthetic_png_b64: str, record_dir,
+) -> None:
+    """Run /explain, then look up its report by analysis_id."""
+    a = client.post(
+        "/explain?fidelity=true",
+        json={
+            "image_b64": synthetic_png_b64,
+            "model_name": "mock",
+            "method": "attention",
+            "question": "what?",
+        },
+    ).json()
+    analysis_id = a["analysis_id"]
+    # Drain the recorder so the file is on disk.
+    from miru.recorder import get_recorder
+
+    get_recorder().flush()
+    resp = client.get(f"/report/{analysis_id}/eu_ai_act")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    for key in ("article_11", "article_13", "article_15", "compliance_status"):
+        assert key in body
+    assert body["article_13"]["model_confidence"] is not None
+    assert body["article_13"]["fidelity_score"] is not None
+    assert body["article_11"]["analysis_id"] == analysis_id
+
+
+# ----- export -------------------------------------------------------------
+
+
+def test_export_returns_404_for_unknown_id(client: TestClient) -> None:
+    resp = client.get(
+        "/analysis/zz-not-a-real-id-12345/export?format=json"
+    )
+    assert resp.status_code == 404
+
+
+def test_export_rejects_invalid_format(
+    client: TestClient, synthetic_png_b64: str, record_dir,
+) -> None:
+    a = client.post(
+        "/explain",
+        json={
+            "image_b64": synthetic_png_b64,
+            "model_name": "mock",
+            "method": "attention",
+            "question": "what?",
+        },
+    ).json()
+    from miru.recorder import get_recorder
+
+    get_recorder().flush()
+    resp = client.get(f"/analysis/{a['analysis_id']}/export?format=xml")
+    assert resp.status_code == 400
+
+
+def test_export_png_returns_image(
+    client: TestClient, synthetic_png_b64: str, record_dir,
+) -> None:
+    a = client.post(
+        "/explain",
+        json={
+            "image_b64": synthetic_png_b64,
+            "model_name": "mock",
+            "method": "attention",
+            "question": "what?",
+        },
+    ).json()
+    from miru.recorder import get_recorder
+
+    get_recorder().flush()
+    resp = client.get(f"/analysis/{a['analysis_id']}/export?format=png")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+    assert resp.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_export_json_returns_record(
+    client: TestClient, synthetic_png_b64: str, record_dir,
+) -> None:
+    a = client.post(
+        "/explain",
+        json={
+            "image_b64": synthetic_png_b64,
+            "model_name": "mock",
+            "method": "attention",
+            "question": "what?",
+        },
+    ).json()
+    from miru.recorder import get_recorder
+
+    get_recorder().flush()
+    resp = client.get(f"/analysis/{a['analysis_id']}/export?format=json")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/json"
+    body = resp.json()
+    assert body["analysis_id"] == a["analysis_id"]

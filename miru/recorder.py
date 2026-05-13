@@ -36,6 +36,7 @@ import json
 import os
 import queue
 import threading
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -70,11 +71,15 @@ def build_record(
     *,
     image_b64: Optional[str],
     question: str,
+    analysis_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """Build a privacy-stripped record dict ready for JSONL serialization.
 
     The returned dict contains:
 
+    - ``analysis_id``  — UUID v4 identifying this analysis; supplied by
+      the caller when known (so the response and the record share an
+      ID), otherwise auto-generated.
     - ``ts``           — UTC ISO-8601 timestamp (microsecond precision)
     - ``question``     — original question string (verbatim)
     - ``image_sha256`` — hex SHA-256 of the source image_b64, or ``None``
@@ -82,11 +87,43 @@ def build_record(
     """
     stripped_trace = {k: v for k, v in trace_dict.items() if k != "overlay_b64"}
     return {
+        "analysis_id": analysis_id or str(uuid.uuid4()),
         "ts": datetime.now(timezone.utc).isoformat(),
         "question": question,
         "image_sha256": hash_image(image_b64) if image_b64 else None,
         "trace": stripped_trace,
     }
+
+
+def find_record_by_id(
+    analysis_id: str, directory: Optional[str] = None
+) -> Optional[dict[str, Any]]:
+    """Scan the recorded JSONL files for a record with the given analysis_id.
+
+    Args:
+        analysis_id: UUID returned by :func:`build_record`.
+        directory: Optional override of ``MIRU_RECORD_PATH``.
+
+    Returns:
+        The matching record dict, or ``None`` if no match is found.
+        Newest match wins when duplicates exist (rare; intentional
+        for re-runs).
+    """
+    if not analysis_id:
+        return None
+    base = directory or os.environ.get(RECORD_PATH_ENV) or DEFAULT_PATH
+    # Files are timestamped lexicographically; iterate newest-first for
+    # a fast path when the caller just recorded the analysis.
+    files = list(reversed(_list_files(base)))
+    for path in files:
+        for line in _read_lines(path):
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if rec.get("analysis_id") == analysis_id:
+                return rec
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -304,20 +341,27 @@ def maybe_record(
     *,
     image_b64: Optional[str],
     question: str,
-) -> None:
+    analysis_id: Optional[str] = None,
+) -> Optional[str]:
     """Enqueue a record if recording is enabled.  No-op otherwise.
 
+    Returns the ``analysis_id`` that was recorded (auto-generated when
+    not supplied), or ``None`` when recording is disabled or fails.
     Errors during enqueue are swallowed — the recorder must never break
     the request path.
     """
     if not is_recording_enabled():
-        return
+        return None
     try:
-        record = build_record(trace_dict, image_b64=image_b64, question=question)
+        record = build_record(
+            trace_dict, image_b64=image_b64, question=question,
+            analysis_id=analysis_id,
+        )
         get_recorder().enqueue(record)
-    except Exception:  # noqa: BLE001
+        return record["analysis_id"]
+    except (KeyError, TypeError, ValueError, OSError):
         # Best-effort recording — never propagate to the caller.
-        return
+        return None
 
 
 __all__ = [
@@ -328,6 +372,7 @@ __all__ = [
     "is_recording_enabled",
     "hash_image",
     "build_record",
+    "find_record_by_id",
     "get_recorder",
     "reset_recorder",
     "maybe_record",

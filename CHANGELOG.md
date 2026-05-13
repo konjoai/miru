@@ -5,6 +5,102 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [Unreleased] — Phase 14: P1 critical sprint (fidelity, consensus, EU AI Act, export)
+
+Audit-quality and regulator-ready output for every explanation. Four
+P1 features from the researched feature roadmap, all behind the
+deployable REST surface.
+
+### Added
+
+#### `miru/fidelity.py` — explanation-fidelity scorecard
+- `deletion_test(backend, image, prompt, saliency, k_pct=0.10,
+  baseline_confidence=None)` masks the top-K% salient pixels with
+  per-image mean colour, re-runs `backend.infer()`, computes
+  `fidelity_score = max(0, (baseline - masked) / baseline)`, clamped
+  to `[0, 1]`. Optional cached baseline_confidence skips one inference.
+- `FidelityResult{ fidelity_score, baseline_confidence,
+  masked_confidence, k_pct, low_fidelity }`; `low_fidelity` flips on
+  below `LOW_FIDELITY_THRESHOLD = 0.5`.
+- Pure NumPy; inline bilinear resampler so saliency maps from any
+  resolution work.
+
+#### `miru/consensus.py` — multi-method saliency consensus
+- `compute_consensus([(name, grid), ...], top_pct=0.20)` returns:
+  - `agreement_grid` — `(R, R)` float in `[0, 1]`, value = fraction
+    of methods that flagged each cell as top-pct
+  - `consensus_score` — mean pair-wise Jaccard over top-pct masks
+  - `pairwise_jaccard` — per-pair scores keyed by `"a|b"`
+  - `disagreement_regions` — cells flagged by exactly one method,
+    sorted descending by summed saliency
+- Resamples non-matching resolutions via nearest-neighbour.
+
+#### `miru/eu_ai_act.py` — compliance report generator
+- `generate_report(record, *, system_name, provider, use_case_category)`
+  maps a recorded analysis onto **Regulation (EU) 2024/1689** Articles
+  11 (technical documentation), 13 (transparency), 15 (accuracy &
+  robustness).
+- `compliance_status` block reports per-article completeness with
+  missing fields. Completeness only — human auditor sign-off still
+  required, and the report says so explicitly.
+- `detected_risks` flags low fidelity (< 0.5), low confidence (< 0.5),
+  and method disagreement (consensus_score < 0.3).
+- `COMPLIANCE_DEADLINE = "2026-08-02"` exposed as a module constant.
+
+#### `miru/export.py` — analysis exporter
+- `export_record(record, fmt)` returns `(bytes, content_type,
+  suggested_filename)` for `"json"`, `"png"` (jet-colorised saliency
+  at 2× via nearest-neighbour), or `"pdf"` (single-page Pillow
+  document with overlay + metadata header; falls back to PNG when
+  Pillow is unavailable).
+- The recorder never persists source pixels, so the PNG/PDF
+  deliberately renders the colorised saliency alone — never
+  composited over a stored image.
+
+#### `miru/recorder.py` — analysis_id + lookup
+- `build_record(..., analysis_id=None)` auto-generates a UUID v4 when
+  none is supplied; the ID is now a top-level field on every JSONL
+  record.
+- `maybe_record(...)` returns the recorded `analysis_id` so routes can
+  echo it back to the client.
+- `find_record_by_id(analysis_id, directory=None)` scans recorded
+  JSONL newest-first, skips corrupt lines, returns the matching
+  record or `None`.
+
+#### `api/main.py` — four wire-format pieces
+- `POST /explain?fidelity=true` — adds a `fidelity` block to the
+  response (off by default — doubles the backend call count).
+  `?record=true` (on by default) controls recording; the response
+  now always includes `analysis_id`.
+- `POST /explain/consensus` — body: image + model + `methods`
+  (≥ 2, distinct, subset of IMPLEMENTED_METHODS) + per-method
+  budgets. Returns per-method full results + agreement_grid +
+  consensus_score + pairwise_jaccard + disagreement_regions.
+- `GET /report/{analysis_id}/eu_ai_act` — returns the structured EU
+  AI Act report; **404** with a hint about `MIRU_RECORD=1` on
+  unknown id.
+- `GET /analysis/{analysis_id}/export?format=png|json|pdf` —
+  bytes + `content-type` + `Content-Disposition: attachment`.
+  **400** on unknown format, **404** on unknown id.
+
+### Tests
+- `tests/test_fidelity.py` (7), `tests/test_consensus.py` (8),
+  `tests/test_eu_ai_act.py` (9), `tests/test_analysis_export.py` (13),
+  `api/test_api.py` (+13 new endpoint contracts).
+
+### Test results
+- **291 / 291 passing** (4 skipped CLIP real-backend tests gated on
+  `MIRU_TEST_REAL_BACKENDS=1`); all 256 prior tests still green.
+
+### Researched Feature Roadmap (recorded in PLAN.md)
+- P1 critical (this sprint): fidelity scorecard, consensus overlay,
+  EU AI Act report, explanation export — all shipped.
+- P2 high-impact / medium-complexity: expert annotation alignment,
+  dataset-level analytics, cross-modal attention tracer.
+- P3 strategic: counterfactual generation, TCAV concept probes, SDK.
+
+---
+
 ## [Unreleased] — Phase 13: LIME, GradCAM, side-by-side compare, eye UI
 
 ### Added

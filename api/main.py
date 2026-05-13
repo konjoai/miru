@@ -33,7 +33,7 @@ import logging
 import time
 
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Path as FastApiPath, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -43,7 +43,12 @@ from miru.attention.extractor import AttentionExtractor
 from miru.bench.comparison import compare_backends
 from miru.bench.runner import run_benchmark
 from miru.config import settings
+from miru.consensus import compute_consensus
+from miru.eu_ai_act import generate_report as generate_eu_ai_act_report
+from miru.export import SUPPORTED_FORMATS, export_record
+from miru.fidelity import LOW_FIDELITY_THRESHOLD, deletion_test
 from miru.models import registry
+from miru.recorder import find_record_by_id, maybe_record
 from miru.visualization.overlay import decode_image_b64, generate_overlay
 
 logger = logging.getLogger(__name__)
@@ -145,6 +150,17 @@ class TopRegion(BaseModel):
     score: float
 
 
+class FidelityBlock(BaseModel):
+    """Outcome of the deletion test attached to an /explain response."""
+
+    model_config = ConfigDict(frozen=True)
+    fidelity_score: float
+    baseline_confidence: float
+    masked_confidence: float
+    k_pct: float
+    low_fidelity: bool
+
+
 class ExplainResponse(BaseModel):
     model_config = ConfigDict(frozen=True)
     model_name: str
@@ -154,6 +170,53 @@ class ExplainResponse(BaseModel):
     overlay_b64: str
     attention_grid: list[list[float]]
     top_regions: list[TopRegion]
+    latency_ms: float
+    analysis_id: str
+    fidelity: FidelityBlock | None = None
+
+
+class ConsensusRequest(BaseModel):
+    """Request body for /explain/consensus.
+
+    Runs 2-3 methods on the same image and computes their agreement.
+    """
+
+    model_config = ConfigDict(frozen=True)
+    image_b64: str = Field(..., description="Base64-encoded source image.")
+    model_name: str = Field("mock", description="Backend name (shared by all methods).")
+    methods: list[str] = Field(
+        default_factory=lambda: ["attention", "lime", "gradcam"],
+        description=f"Methods to run; subset of {IMPLEMENTED_METHODS}. Minimum 2.",
+    )
+    question: str = Field("Where is the salient region?")
+    alpha: float = Field(0.5, ge=0.0, le=1.0)
+    colormap: str = Field("jet")
+    top_pct: float = Field(0.20, gt=0.0, lt=1.0)
+    top_k: int = Field(5, ge=1, le=64)
+    n_samples: int = Field(48, ge=2, le=MAX_LIME_SAMPLES)
+    n_segments: int = Field(36, ge=4, le=MAX_LIME_SEGMENTS)
+    occlusion_grid: int = Field(6, ge=2, le=MAX_OCCLUSION_GRID)
+
+
+class MethodResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    method: str
+    overlay_b64: str
+    attention_grid: list[list[float]]
+    top_regions: list[TopRegion]
+
+
+class ConsensusResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    model_name: str
+    methods: list[str]
+    answer: str
+    per_method: list[MethodResult]
+    agreement_grid: list[list[float]]
+    consensus_score: float
+    pairwise_jaccard: dict[str, float]
+    disagreement_regions: list[list[int]]
+    top_pct: float
     latency_ms: float
 
 
@@ -311,7 +374,26 @@ def methods() -> MethodsResponse:
 
 
 @app.post("/explain", response_model=ExplainResponse)
-def explain(req: ExplainRequest) -> ExplainResponse:
+def explain(
+    req: ExplainRequest,
+    fidelity: bool = Query(
+        default=False,
+        description=(
+            "Run the deletion test on the saliency map and include a "
+            "fidelity block in the response. Doubles the backend call "
+            "count, so off by default."
+        ),
+    ),
+    record: bool = Query(
+        default=True,
+        description=(
+            "Persist a privacy-stripped JSONL trace via the recorder "
+            "(no-op when MIRU_RECORD is unset). The returned analysis_id "
+            "can later be passed to /report/{id}/eu_ai_act and "
+            "/analysis/{id}/export."
+        ),
+    ),
+) -> ExplainResponse:
     _validate_method(req.method)
     backend = _get_backend_or_400(req.model_name)
     image_array = _decode_to_float_array(req.image_b64)
@@ -331,6 +413,40 @@ def explain(req: ExplainRequest) -> ExplainResponse:
             status_code=400, detail=f"overlay generation failed: {exc}"
         ) from exc
 
+    fidelity_block: FidelityBlock | None = None
+    if fidelity:
+        result = deletion_test(
+            backend, image_array, req.question, saliency_grid,
+            baseline_confidence=float(out.confidence),
+        )
+        fidelity_block = FidelityBlock(
+            fidelity_score=result.fidelity_score,
+            baseline_confidence=result.baseline_confidence,
+            masked_confidence=result.masked_confidence,
+            k_pct=result.k_pct,
+            low_fidelity=result.low_fidelity,
+        )
+
+    # Build a stable trace dict for the recorder. Stripped of overlay
+    # by build_record; we drop the attention_grid here too — it's
+    # bulky and the export path re-derives it from the original record
+    # via the attention_grid field (kept) so the user can still PNG/PDF.
+    trace_dict = {
+        "answer": out.answer,
+        "confidence": float(out.confidence),
+        "backend": backend.name,
+        "method": req.method,
+        "explanation_method": req.method,
+        "latency_ms": latency_ms,
+        "attention_grid": saliency_grid.astype(float).tolist(),
+        "top_regions": [{"row": r, "col": c, "score": s} for r, c, s in top],
+        "fidelity": fidelity_block.model_dump() if fidelity_block else None,
+    }
+    analysis_id = (
+        maybe_record(trace_dict, image_b64=req.image_b64, question=req.question)
+        if record else None
+    ) or ""
+
     return ExplainResponse(
         model_name=backend.name,
         method=req.method,
@@ -340,6 +456,8 @@ def explain(req: ExplainRequest) -> ExplainResponse:
         attention_grid=saliency_grid.astype(float).tolist(),
         top_regions=[TopRegion(row=r, col=c, score=s) for r, c, s in top],
         latency_ms=latency_ms,
+        analysis_id=analysis_id,
+        fidelity=fidelity_block,
     )
 
 
@@ -387,6 +505,162 @@ def explain_compare(req: ExplainCompareRequest) -> ExplainCompareResponse:
         a_top_regions=[TopRegion(row=r, col=c, score=s) for r, c, s in top_a],
         b_top_regions=[TopRegion(row=r, col=c, score=s) for r, c, s in top_b],
         latency_ms=latency_ms,
+    )
+
+
+@app.post("/explain/consensus", response_model=ConsensusResponse)
+def explain_consensus(req: ConsensusRequest) -> ConsensusResponse:
+    """Run 2-3 methods on one image and compute their saliency consensus.
+
+    Returns each method's full overlay + grid + top regions, plus an
+    `agreement_grid` whose value is the fraction of methods that
+    flagged each cell as top-`top_pct`, the mean pair-wise Jaccard
+    consensus score, and the explicit list of `disagreement_regions`
+    flagged in exactly one method.
+    """
+    if len(req.methods) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="consensus requires at least two methods",
+        )
+    if len(set(req.methods)) != len(req.methods):
+        raise HTTPException(
+            status_code=400,
+            detail="methods must be distinct",
+        )
+    for m in req.methods:
+        _validate_method(m)
+
+    backend = _get_backend_or_400(req.model_name)
+    image_array = _decode_to_float_array(req.image_b64)
+
+    # Translate the consensus request shape into the per-method arg
+    # bundle that _run_method expects.
+    inner_req = ExplainRequest(
+        image_b64=req.image_b64,
+        model_name=req.model_name,
+        method=req.methods[0],  # placeholder; overwritten per call
+        question=req.question,
+        alpha=req.alpha,
+        colormap=req.colormap,
+        top_k=req.top_k,
+        n_samples=req.n_samples,
+        n_segments=req.n_segments,
+        occlusion_grid=req.occlusion_grid,
+    )
+
+    t0 = time.perf_counter()
+    per_method: list[tuple[str, np.ndarray, MethodResult]] = []
+    answer = ""
+    for method in req.methods:
+        out, sal = _run_method(method, backend, image_array, inner_req)
+        if not answer:
+            answer = out.answer
+        try:
+            overlay = generate_overlay(
+                req.image_b64, sal, alpha=req.alpha, colormap=req.colormap
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"overlay generation failed: {exc}"
+            ) from exc
+        top = _EXTRACTOR.top_k_regions(sal, k=req.top_k)
+        per_method.append((
+            method,
+            sal,
+            MethodResult(
+                method=method,
+                overlay_b64=overlay,
+                attention_grid=sal.astype(float).tolist(),
+                top_regions=[TopRegion(row=r, col=c, score=s) for r, c, s in top],
+            ),
+        ))
+
+    consensus = compute_consensus(
+        [(name, sal) for name, sal, _ in per_method],
+        top_pct=req.top_pct,
+    )
+    latency_ms = (time.perf_counter() - t0) * 1_000.0
+
+    return ConsensusResponse(
+        model_name=backend.name,
+        methods=req.methods,
+        answer=answer,
+        per_method=[m for _, _, m in per_method],
+        agreement_grid=consensus.agreement_grid.astype(float).tolist(),
+        consensus_score=consensus.consensus_score,
+        pairwise_jaccard=consensus.pairwise_jaccard,
+        disagreement_regions=[[r, c] for r, c in consensus.disagreement_regions],
+        top_pct=consensus.top_pct,
+        latency_ms=latency_ms,
+    )
+
+
+@app.get("/report/{analysis_id}/eu_ai_act")
+def eu_ai_act_report(
+    analysis_id: str = FastApiPath(
+        ..., min_length=8, description="analysis_id returned by /explain"
+    ),
+) -> dict:
+    """EU AI Act compliance report for one recorded analysis.
+
+    Looks the analysis up by ID in the recorder's JSONL store; returns
+    a structured report covering Article 11 (technical documentation),
+    Article 13 (transparency), and Article 15 (accuracy & robustness).
+
+    Returns 404 when the analysis_id is not present in the record store
+    (which most often means recording was disabled at /explain time).
+    """
+    record = find_record_by_id(analysis_id)
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"analysis_id '{analysis_id}' not found; "
+                "ensure MIRU_RECORD=1 was set when the analysis ran"
+            ),
+        )
+    return generate_eu_ai_act_report(record)
+
+
+@app.get("/analysis/{analysis_id}/export")
+def analysis_export(
+    analysis_id: str = FastApiPath(
+        ..., min_length=8, description="analysis_id returned by /explain"
+    ),
+    format: str = Query(  # noqa: A002 — matches the public API name in the spec
+        default="json",
+        description=f"Export format; one of {SUPPORTED_FORMATS}.",
+    ),
+) -> Response:
+    """Export a recorded analysis as PNG, JSON, or PDF.
+
+    PNG: heatmap colorised at 2× via the jet palette.
+    JSON: the full recorded JSONL record.
+    PDF: single-page Pillow document with the overlay and a metadata
+    header (falls back to PNG bytes when Pillow is unavailable).
+    """
+    if format not in SUPPORTED_FORMATS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"format must be one of {SUPPORTED_FORMATS}, got {format!r}"
+            ),
+        )
+    record = find_record_by_id(analysis_id)
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"analysis_id '{analysis_id}' not found; "
+                "ensure MIRU_RECORD=1 was set when the analysis ran"
+            ),
+        )
+    payload, content_type, filename = export_record(record, format)
+    return Response(
+        content=payload,
+        media_type=content_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

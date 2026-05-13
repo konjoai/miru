@@ -303,6 +303,61 @@ still skip without `MIRU_TEST_REAL_BACKENDS=1`.
 
 ---
 
+## Researched Feature Roadmap
+
+Prioritised features compiled from a 2026 explainability-tooling sweep
+(arXiv saliency literature, EU AI Act compliance deadlines, expert
+annotation studies, deployed XAI tooling). Each tier is independently
+shippable.
+
+### 🔴 P1 — Critical (sprint targets)
+
+- **Explanation fidelity scorecard.** After generating a saliency map,
+  run a deletion test: mask the top-K% most salient pixels and re-run
+  inference. Score = drop in model confidence. Report `fidelity_score`
+  ∈ [0, 1] alongside every heatmap; UI warns when < 0.5 ("this
+  explanation may not reflect model reasoning").
+- **Multi-method consensus overlay.** Run 2+ saliency methods
+  simultaneously (occlusion + LIME minimum; integrated gradients when
+  a gradient backend is available). Overlay shows where methods agree
+  vs. disagree; disagreement regions are flagged.
+  `POST /explain/consensus` with `methods=[…]`.
+- **EU AI Act compliance report generator.** `GET /report/{analysis_id}/eu_ai_act`
+  returns a structured report covering Article 11 (technical documentation),
+  Article 13 (transparency), Article 15 (accuracy & robustness). Auto-fills
+  from recorded analyses. **Compliance deadline: August 2026.**
+- **Explanation export.** `GET /analysis/{id}/export?format=png|json|pdf`.
+  PNG: heatmap at 2×. JSON: full saliency record. PDF: report-ready
+  page (overlay + metadata header).
+
+### 🟠 P2 — High impact, medium complexity
+
+- **Multi-method consensus (full).** Integrated Gradients as a third
+  method; consensus score = Jaccard similarity of top-20% salient
+  regions across all methods.
+- **Expert annotation alignment.** `POST /analyze/{id}/compare_annotation`
+  accepts a ground-truth mask. Returns spatial IoU, Spearman rank
+  correlation, "right answer / wrong reasoning" flag when prediction
+  is correct but alignment < 0.3.
+- **Dataset-level saliency analytics.** `POST /analyze/batch` over an
+  array of images. Aggregate heatmap; spurious-correlation detector
+  flags regions consistently salient but not semantically meaningful
+  (borders, watermarks).
+- **Cross-modal attention tracer.** `POST /trace` returns a per-word →
+  image-region attention matrix. Click a word in the UI, see the
+  region it attends to.
+
+### 🟡 P3 — Strategic
+
+- **Counterfactual generation.** Minimal adversarial perturbation that
+  flips the verdict.
+- **Concept-based explanations (TCAV-style).** Probe whether the model
+  uses named concepts ("fur texture", "metallic surface", "text").
+- **Saliency API SDK.** Python + JS clients; batch analysis with an
+  async job queue.
+
+---
+
 ## Phase 14 — SHAP Perturbation Explainer (v1.1.0) ✅
 
 **Goal:** Add a SHAP-style tile-masking attribution explainer, promote `shap`
@@ -312,35 +367,64 @@ from roadmap → implemented, and ship 18 new tests.
 - `miru/shap_explainer.py` — `SHAPConfig` (dataclass) + `SHAPExplainer` class.
   Implements the Shapley approximation:
   φᵢ ≈ (1/M) Σⱼ [ f(S_j ∪ {i}) − f(S_j) ] via tile-mask sampling.
-  Pure NumPy + PIL; no `shap` library dependency.  Attribution in [-1, 1]
+  Pure NumPy + PIL; no `shap` library dependency. Attribution in [-1, 1]
   float32; bilinear upsample to full image resolution.
 - `api/main.py` — `shap` promoted from `ROADMAP_METHODS` to
   `IMPLEMENTED_METHODS`; `_run_method` dispatches to `SHAPExplainer`; request
-  schema extended with `shap_grid` and `shap_samples` fields; `_float_array_to_pil`
-  helper converts float32 arrays for PIL-expecting code.
+  schema extended with `shap_grid` and `shap_samples`.
 - `tests/test_shap_explainer.py` — 18 tests: config defaults, shape/dtype/range
   contracts, determinism, baseline variants, masked-image invariants, registry
   and API integration.
-- Updated `api/test_api.py` — `test_explain_compare_unknown_method_returns_400`
-  updated to use a genuinely unknown method (shap is now implemented);
-  `test_methods_lists_lime_and_gradcam_as_implemented` updated to assert all
-  four methods as implemented.
 
 **Ship gate:** 281/281 tests pass (18 new, 263 existing); 4 real-backend tests
 still skip without `MIRU_TEST_REAL_BACKENDS=1`.
 
 ---
 
-## Phase 15 — TBD
+## Phase 15 — P1 Critical Sprint ✅
 
-Open candidates:
-- True Grad-CAM run against a torch-loaded CLIP-RN50 checkpoint (RN50 has
-  conv layers, unlike ViT-B/32) — drop-in `clip-rn` backend + benchmark
-  comparison to occlusion-sensitivity Grad-CAM.
+**Goal:** Ship the four critical features from the researched roadmap so
+the explainability surface gives audit-quality, regulator-ready output.
+
+**Delivered:**
+- `miru/fidelity.py` — deletion test: mask top-K% salient pixels with
+  per-image mean colour, re-run `backend.infer()`, compute
+  `fidelity_score = max(0, (baseline_conf - masked_conf) / baseline_conf)`.
+  Returns `FidelityResult{ fidelity_score, baseline_confidence,
+  masked_confidence, k_pct, low_fidelity (< 0.5) }`. Pure NumPy.
+- `miru/consensus.py` — multi-method agreement/disagreement.
+  `compute_consensus(maps, top_pct=0.20)` returns an `agreement_grid`
+  whose value is the fraction of methods including each cell in their
+  top-pct, plus per-pair Jaccard scores, a mean `consensus_score`, and
+  the explicit `disagreement_regions` flagged for the UI.
+- `miru/eu_ai_act.py` — structured report builder mapping Article 11
+  (technical documentation), Article 13 (transparency), Article 15
+  (accuracy & robustness) onto fields present in a recorded analysis.
+  Includes a `compliance_status` block flagging missing fields.
+- `miru/export.py` — PNG (heatmap colorized at 2×), JSON (full
+  recorded record), and PDF (single-page Pillow document with overlay
+  + metadata header). Pure-zlib PNG path when Pillow is unavailable.
+- `miru/recorder.py` — `build_record()` now generates a UUID v4
+  `analysis_id` when none is supplied; new `find_record_by_id` helper
+  scans recorded JSONL across files and returns the matching record.
+- `api/main.py` — `POST /explain?fidelity=true` adds a `fidelity` block
+  to the response; new `POST /explain/consensus`, `GET
+  /report/{analysis_id}/eu_ai_act`, and `GET /analysis/{id}/export?format=…`.
+
+---
+
+## Phase 16 — TBD
+
+Open candidates (P2/P3 from the researched roadmap, plus deferred items):
+- Expert annotation alignment (P2).
+- Dataset-level saliency analytics (P2).
+- Cross-modal attention tracer (P2).
+- True Grad-CAM via torch-loaded CLIP-RN50 (P3).
 - Native VLM streaming backend (LLaVA / Idefics / Qwen-VL with token-level
   attention) so `/analyze/stream` produces genuinely incremental reasoning
-  instead of replaying a single-shot inference.
-- Real-image benchmark slice: plug VQA-X or COCO-Saliency behind the
-  existing metric interface and publish the curve alongside the synthetic
-  baseline.
-- gRPC alternative to the FastAPI surface for in-cluster low-latency inference.
+  instead of replaying a single-shot inference (P3).
+- Real-image benchmark slice (P3) — VQA-X or COCO-Saliency behind the
+  existing metric interface, alongside the synthetic baseline.
+- Counterfactual generation, TCAV concept probes, language SDK (P3).
+- gRPC alternative to the FastAPI surface for in-cluster low-latency
+  inference (P3).
