@@ -28,3 +28,7 @@ htmlcov/
 # Demo server runtime artefacts
 demo/_traces/
 miru_traces/
+
+# Cache database — content-addressed, regenerable
+miru_cache.db
+*.db-journal

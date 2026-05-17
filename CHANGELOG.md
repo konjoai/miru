@@ -5,6 +5,69 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [Unreleased] — Phase 16: batch explain + content-addressed cache
+
+### Added
+
+#### `miru/explain_cache.py` — SQLite content-addressed cache
+- `ExplainCache(path)` — thread-safe SQLite cache keyed on
+  `SHA-256(image_b64 | method | model_name | params_json)`. Stores
+  full ExplainResponse-shaped payloads as JSON; tracks per-row
+  `hit_count` and global `total_hits` / `total_misses` counters in
+  a `cache_meta` table.
+- `cache_key(image_b64, method, model_name, params)` — pure helper;
+  deterministic across dict orderings.
+- `get_cache()` singleton honours `MIRU_CACHE_ENABLED` (default on)
+  and `MIRU_CACHE_PATH` (default `./miru_cache.db`).
+- Corrupt rows self-heal (deleted on first bad read).
+
+#### `POST /explain/batch`
+- Body: `{items: ExplainRequest[1..32], fidelity, record, stop_on_error}`.
+- Sequential execution through the cache layer — warm items return
+  instantly. Each slot is independent; one bad item doesn't fail the
+  batch unless `stop_on_error=true`.
+- Aggregate block: `total`, `success_count`, `failure_count`,
+  `cache_hits`, `cache_misses`, `mean_confidence`, `mean_fidelity`,
+  `total_latency_ms`.
+
+#### `POST /explain` — cache-aware
+- New `use_cache: bool = true` query param.
+- `X-Miru-Cache: hit | miss | bypass` response header.
+- Cache **hits** still call `maybe_record()` so every call produces
+  its own `analysis_id` and audit-log entry — only the heavy
+  compute (attention grid, overlay, top regions, fidelity block) is
+  reused. Hit latency is the observed lookup time, not the cached
+  compute time.
+
+#### `GET /explain/cache_stats`
+- Returns `{enabled, path, total_entries, total_hits, total_misses,
+  hit_rate, size_bytes, per_method}`.
+
+#### `POST /explain/cache_clear`
+- Drops every entry, resets hit/miss counters; returns the row
+  count.
+
+### Tests
+- `tests/test_explain_cache.py` — 19 unit tests covering key
+  determinism + 4 partitioning axes, round-trip, hit-count column,
+  corrupt-row self-heal, uncacheable-payload skip, stats, clear,
+  env-gating, singleton identity + reset.
+- `api/test_batch_and_cache.py` — 19 HTTP tests: cache header
+  semantics (miss → hit → bypass), partition by method / param,
+  env-disable, stats endpoint reflects traffic, clear endpoint,
+  batch happy path / warm-cache / order / fidelity / mixed methods /
+  one-bad-item-doesn't-fail-others / stop_on_error / empty 422 /
+  oversized 422 / single item.
+
+### Notes
+- `/explain/compare` and `/explain/consensus` already shipped in
+  Phase 13; option 2 of the brief was already done. Built options 1
+  (batch) and 3 (cache) instead.
+- Total tests: **387 / 387 passing**, 5 skipped. +65 net new vs the
+  322 baseline before this phase.
+
+---
+
 ## [Unreleased] — Phase 14: P1 critical sprint (fidelity, consensus, EU AI Act, export)
 
 Audit-quality and regulator-ready output for every explanation. Four

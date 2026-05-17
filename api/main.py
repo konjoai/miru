@@ -45,6 +45,7 @@ from miru.bench.runner import run_benchmark
 from miru.config import settings
 from miru.consensus import compute_consensus
 from miru.eu_ai_act import generate_report as generate_eu_ai_act_report
+from miru.explain_cache import cache_key, get_cache, is_cache_enabled
 from miru.export import SUPPORTED_FORMATS, export_record
 from miru.fidelity import LOW_FIDELITY_THRESHOLD, deletion_test
 from miru.models import registry
@@ -72,6 +73,7 @@ ROADMAP_METHODS: tuple[str, ...] = ()
 MAX_LIME_SAMPLES = 256
 MAX_LIME_SEGMENTS = 144
 MAX_OCCLUSION_GRID = 16
+MAX_BATCH_ITEMS = 32  # cap /explain/batch input — bounded compute, security boundary
 
 # One extractor instance — stateless, safe across requests.
 _EXTRACTOR = AttentionExtractor(resolution=settings.attention_resolution)
@@ -310,6 +312,91 @@ class CompareResponse(BaseModel):
     timestamp: str
 
 
+# ----- Batch + cache schemas -------------------------------------------------
+
+
+class BatchExplainRequest(BaseModel):
+    """Body for ``POST /explain/batch``.
+
+    Each item is a full :class:`ExplainRequest` so callers can mix
+    methods, models, prompts, and per-item knobs within one batch.
+    The ``fidelity`` / ``record`` flags apply uniformly to every item
+    (matching how clients use the single-image endpoint).
+    """
+
+    model_config = ConfigDict(frozen=True)
+    items: list[ExplainRequest] = Field(
+        ..., min_length=1, max_length=MAX_BATCH_ITEMS,
+        description=f"Per-image requests. 1..{MAX_BATCH_ITEMS}.",
+    )
+    fidelity: bool = Field(
+        False, description="Run the deletion test on every item.",
+    )
+    record: bool = Field(
+        True, description="Persist a JSONL trace per item (no-op when MIRU_RECORD unset).",
+    )
+    stop_on_error: bool = Field(
+        False,
+        description=(
+            "When true, the batch aborts on the first item that fails. "
+            "Following items are returned with ``success=False`` and a "
+            "skipped error."
+        ),
+    )
+
+
+class BatchItemResult(BaseModel):
+    """One slot in :class:`BatchExplainResponse.items`."""
+
+    model_config = ConfigDict(frozen=True)
+    index: int
+    success: bool
+    cached: bool
+    response: ExplainResponse | None = None
+    error: str | None = None
+
+
+class BatchAggregate(BaseModel):
+    """Roll-up statistics for one batch run."""
+
+    model_config = ConfigDict(frozen=True)
+    total: int
+    success_count: int
+    failure_count: int
+    cache_hits: int
+    cache_misses: int
+    mean_confidence: float | None
+    mean_fidelity: float | None
+    total_latency_ms: float
+
+
+class BatchExplainResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    items: list[BatchItemResult]
+    aggregate: BatchAggregate
+
+
+class CacheStatsResponse(BaseModel):
+    """Body of ``GET /explain/cache_stats``."""
+
+    model_config = ConfigDict(frozen=True)
+    enabled: bool
+    path: str | None = None
+    total_entries: int = 0
+    total_hits: int = 0
+    total_misses: int = 0
+    hit_rate: float | None = None
+    size_bytes: int = 0
+    per_method: dict[str, int] = Field(default_factory=dict)
+
+
+class CacheClearResponse(BaseModel):
+    """Body of ``POST /explain/cache_clear``."""
+
+    model_config = ConfigDict(frozen=True)
+    cleared: int
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -373,27 +460,34 @@ def methods() -> MethodsResponse:
     )
 
 
-@app.post("/explain", response_model=ExplainResponse)
-def explain(
+def _explain_cache_key(req: ExplainRequest, fidelity: bool) -> str:
+    """Cache key covering every input that materially affects the response."""
+    params = {
+        "question": req.question,
+        "alpha": req.alpha,
+        "colormap": req.colormap,
+        "top_k": req.top_k,
+        "n_samples": req.n_samples,
+        "n_segments": req.n_segments,
+        "occlusion_grid": req.occlusion_grid,
+        "shap_grid": req.shap_grid,
+        "shap_samples": req.shap_samples,
+        "fidelity": bool(fidelity),
+    }
+    return cache_key(req.image_b64, req.method, req.model_name, params)
+
+
+def _run_explain_uncached(
     req: ExplainRequest,
-    fidelity: bool = Query(
-        default=False,
-        description=(
-            "Run the deletion test on the saliency map and include a "
-            "fidelity block in the response. Doubles the backend call "
-            "count, so off by default."
-        ),
-    ),
-    record: bool = Query(
-        default=True,
-        description=(
-            "Persist a privacy-stripped JSONL trace via the recorder "
-            "(no-op when MIRU_RECORD is unset). The returned analysis_id "
-            "can later be passed to /report/{id}/eu_ai_act and "
-            "/analysis/{id}/export."
-        ),
-    ),
-) -> ExplainResponse:
+    *,
+    fidelity: bool,
+    record: bool,
+) -> dict[str, object]:
+    """Run one /explain end-to-end and return a dict ready for ExplainResponse.
+
+    Pure compute path — no cache lookup, no cache write. The caller wraps
+    this when caching is enabled.
+    """
     _validate_method(req.method)
     backend = _get_backend_or_400(req.model_name)
     image_array = _decode_to_float_array(req.image_b64)
@@ -413,24 +507,24 @@ def explain(
             status_code=400, detail=f"overlay generation failed: {exc}"
         ) from exc
 
-    fidelity_block: FidelityBlock | None = None
+    fidelity_dict: dict[str, object] | None = None
     if fidelity:
         result = deletion_test(
             backend, image_array, req.question, saliency_grid,
             baseline_confidence=float(out.confidence),
         )
-        fidelity_block = FidelityBlock(
-            fidelity_score=result.fidelity_score,
-            baseline_confidence=result.baseline_confidence,
-            masked_confidence=result.masked_confidence,
-            k_pct=result.k_pct,
-            low_fidelity=result.low_fidelity,
-        )
+        fidelity_dict = {
+            "fidelity_score": result.fidelity_score,
+            "baseline_confidence": result.baseline_confidence,
+            "masked_confidence": result.masked_confidence,
+            "k_pct": result.k_pct,
+            "low_fidelity": result.low_fidelity,
+        }
 
-    # Build a stable trace dict for the recorder. Stripped of overlay
-    # by build_record; we drop the attention_grid here too — it's
-    # bulky and the export path re-derives it from the original record
-    # via the attention_grid field (kept) so the user can still PNG/PDF.
+    attention_grid_list = saliency_grid.astype(float).tolist()
+    top_list = [{"row": int(r), "col": int(c), "score": float(s)} for r, c, s in top]
+
+    # Build a stable trace dict for the recorder.
     trace_dict = {
         "answer": out.answer,
         "confidence": float(out.confidence),
@@ -438,27 +532,129 @@ def explain(
         "method": req.method,
         "explanation_method": req.method,
         "latency_ms": latency_ms,
-        "attention_grid": saliency_grid.astype(float).tolist(),
-        "top_regions": [{"row": r, "col": c, "score": s} for r, c, s in top],
-        "fidelity": fidelity_block.model_dump() if fidelity_block else None,
+        "attention_grid": attention_grid_list,
+        "top_regions": top_list,
+        "fidelity": fidelity_dict,
     }
     analysis_id = (
         maybe_record(trace_dict, image_b64=req.image_b64, question=req.question)
         if record else None
     ) or ""
 
-    return ExplainResponse(
-        model_name=backend.name,
-        method=req.method,
-        answer=out.answer,
-        confidence=float(out.confidence),
-        overlay_b64=overlay_b64,
-        attention_grid=saliency_grid.astype(float).tolist(),
-        top_regions=[TopRegion(row=r, col=c, score=s) for r, c, s in top],
-        latency_ms=latency_ms,
-        analysis_id=analysis_id,
-        fidelity=fidelity_block,
-    )
+    return {
+        "model_name": backend.name,
+        "method": req.method,
+        "answer": out.answer,
+        "confidence": float(out.confidence),
+        "overlay_b64": overlay_b64,
+        "attention_grid": attention_grid_list,
+        "top_regions": top_list,
+        "latency_ms": latency_ms,
+        "analysis_id": analysis_id,
+        "fidelity": fidelity_dict,
+    }
+
+
+def _run_explain_with_cache(
+    req: ExplainRequest,
+    *,
+    fidelity: bool,
+    record: bool,
+) -> tuple[ExplainResponse, bool]:
+    """Run /explain through the cache. Returns (response, was_cache_hit).
+
+    Cache semantics
+    ---------------
+    The cache stores the heavy computation — saliency grid, overlay,
+    top regions, answer, confidence, fidelity block — keyed on the
+    inputs that materially affect those fields.
+
+    Two things are *not* preserved from the cached payload:
+
+    1. ``analysis_id``: each call to ``/explain`` is a distinct audit
+       event and must produce its own ID. On cache hit we still call
+       ``maybe_record`` so the audit log records this specific call,
+       then substitute the fresh ID into the returned response.
+    2. ``latency_ms``: the cached value reflects the *original* call's
+       compute time. Cache hits return a near-zero latency to make the
+       observable speedup honest to clients.
+    """
+    cache = get_cache()
+    if cache is None:
+        return ExplainResponse(**_run_explain_uncached(req, fidelity=fidelity, record=record)), False
+
+    key = _explain_cache_key(req, fidelity)
+    t0 = time.perf_counter()
+    cached = cache.get(key)
+    if cached is not None:
+        # Re-record so every call is audited, even cache hits.
+        trace_dict = {
+            "answer": cached["answer"],
+            "confidence": cached["confidence"],
+            "backend": cached["model_name"],
+            "method": cached["method"],
+            "explanation_method": cached["method"],
+            "latency_ms": cached.get("latency_ms", 0.0),
+            "attention_grid": cached["attention_grid"],
+            "top_regions": cached["top_regions"],
+            "fidelity": cached.get("fidelity"),
+            "cache_hit": True,
+        }
+        fresh_id = (
+            maybe_record(trace_dict, image_b64=req.image_b64, question=req.question)
+            if record else None
+        ) or ""
+        # Build a response with the fresh ID + observed lookup latency.
+        merged = {**cached, "analysis_id": fresh_id,
+                  "latency_ms": (time.perf_counter() - t0) * 1_000.0}
+        return ExplainResponse(**merged), True
+
+    payload = _run_explain_uncached(req, fidelity=fidelity, record=record)
+    cache.put(key, payload, method=req.method, model_name=req.model_name)
+    return ExplainResponse(**payload), False
+
+
+@app.post("/explain", response_model=ExplainResponse)
+def explain(
+    req: ExplainRequest,
+    response: Response,
+    fidelity: bool = Query(
+        default=False,
+        description=(
+            "Run the deletion test on the saliency map and include a "
+            "fidelity block in the response. Doubles the backend call "
+            "count, so off by default."
+        ),
+    ),
+    record: bool = Query(
+        default=True,
+        description=(
+            "Persist a privacy-stripped JSONL trace via the recorder "
+            "(no-op when MIRU_RECORD is unset). The returned analysis_id "
+            "can later be passed to /report/{id}/eu_ai_act and "
+            "/analysis/{id}/export."
+        ),
+    ),
+    use_cache: bool = Query(
+        default=True,
+        description=(
+            "When true (default), serve cached results for repeat "
+            "(image, model, method, params) combinations. Set false "
+            "to force re-computation."
+        ),
+    ),
+) -> ExplainResponse:
+    """Run one explanation. Cache-aware unless ``use_cache=false`` is passed.
+
+    The response header ``X-Miru-Cache`` is set to ``hit`` or ``miss`` so
+    clients can observe cache behaviour without parsing the JSON.
+    """
+    if use_cache and is_cache_enabled():
+        result, was_hit = _run_explain_with_cache(req, fidelity=fidelity, record=record)
+        response.headers["X-Miru-Cache"] = "hit" if was_hit else "miss"
+        return result
+    response.headers["X-Miru-Cache"] = "bypass"
+    return ExplainResponse(**_run_explain_uncached(req, fidelity=fidelity, record=record))
 
 
 @app.post("/explain/compare", response_model=ExplainCompareResponse)
@@ -849,6 +1045,119 @@ def _float_array_to_pil(image_array: np.ndarray) -> "Image.Image":
 
     uint8 = np.clip(image_array * 255.0, 0, 255).astype(np.uint8)
     return Image.fromarray(uint8, mode="RGB")
+
+
+# ---------------------------------------------------------------------------
+# Batch + cache endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.post("/explain/batch", response_model=BatchExplainResponse)
+def explain_batch(req: BatchExplainRequest) -> BatchExplainResponse:
+    """Run /explain over a list of images sequentially.
+
+    Cache hits are served instantly per item; misses run end-to-end and
+    populate the cache for next time. Each slot in the response is
+    independent — one bad item doesn't fail the batch unless
+    ``stop_on_error=true``.
+
+    Aggregate stats roll up over the successful items only:
+    ``mean_confidence`` and (when ``fidelity=true``) ``mean_fidelity``.
+    """
+    items: list[BatchItemResult] = []
+    aborted = False
+    success_confs: list[float] = []
+    success_fids: list[float] = []
+    cache_hits = 0
+    cache_misses = 0
+    total_t0 = time.perf_counter()
+
+    for idx, item_req in enumerate(req.items):
+        if aborted:
+            items.append(BatchItemResult(
+                index=idx, success=False, cached=False,
+                error="skipped: prior item failed (stop_on_error=true)",
+            ))
+            continue
+        try:
+            if is_cache_enabled():
+                resp, was_hit = _run_explain_with_cache(
+                    item_req, fidelity=req.fidelity, record=req.record,
+                )
+            else:
+                resp = ExplainResponse(**_run_explain_uncached(
+                    item_req, fidelity=req.fidelity, record=req.record,
+                ))
+                was_hit = False
+            if was_hit:
+                cache_hits += 1
+            else:
+                cache_misses += 1
+            success_confs.append(float(resp.confidence))
+            if resp.fidelity is not None:
+                success_fids.append(float(resp.fidelity.fidelity_score))
+            items.append(BatchItemResult(
+                index=idx, success=True, cached=was_hit, response=resp,
+            ))
+        except HTTPException as exc:
+            items.append(BatchItemResult(
+                index=idx, success=False, cached=False, error=str(exc.detail),
+            ))
+            if req.stop_on_error:
+                aborted = True
+        except (ValueError, RuntimeError, KeyError) as exc:
+            # Boundary code: these are the realistic failure modes from
+            # the image decode / backend / numpy paths. Anything else
+            # is a programmer bug and should propagate.
+            items.append(BatchItemResult(
+                index=idx, success=False, cached=False,
+                error=f"{type(exc).__name__}: {exc}",
+            ))
+            if req.stop_on_error:
+                aborted = True
+
+    total_latency_ms = (time.perf_counter() - total_t0) * 1_000.0
+    success_count = sum(1 for it in items if it.success)
+    failure_count = len(items) - success_count
+
+    aggregate = BatchAggregate(
+        total=len(items),
+        success_count=success_count,
+        failure_count=failure_count,
+        cache_hits=cache_hits,
+        cache_misses=cache_misses,
+        mean_confidence=(sum(success_confs) / len(success_confs)) if success_confs else None,
+        mean_fidelity=(sum(success_fids) / len(success_fids)) if success_fids else None,
+        total_latency_ms=total_latency_ms,
+    )
+    return BatchExplainResponse(items=items, aggregate=aggregate)
+
+
+@app.get("/explain/cache_stats", response_model=CacheStatsResponse)
+def explain_cache_stats() -> CacheStatsResponse:
+    """Report cache hit/miss counts, entry count, and on-disk size.
+
+    When ``MIRU_CACHE_ENABLED=0`` the response is ``{"enabled": false}``
+    with every other field at its default.
+    """
+    cache = get_cache()
+    if cache is None:
+        return CacheStatsResponse(enabled=False)
+    stats = cache.stats()
+    return CacheStatsResponse(**stats)
+
+
+@app.post("/explain/cache_clear", response_model=CacheClearResponse)
+def explain_cache_clear() -> CacheClearResponse:
+    """Drop every cache entry and reset the hit/miss counters.
+
+    Returns the number of rows deleted.  A no-op (``cleared=0``) when
+    the cache is disabled.
+    """
+    cache = get_cache()
+    if cache is None:
+        return CacheClearResponse(cleared=0)
+    return CacheClearResponse(cleared=cache.clear())
 
 
 __all__ = ["app"]

@@ -413,7 +413,66 @@ the explainability surface gives audit-quality, regulator-ready output.
 
 ---
 
-## Phase 16 — TBD
+## Phase 16 — Batch Explain + Content-Addressed Cache ✅
+
+**Goal:** Ship the two highest-leverage P2 items: a batch endpoint so callers
+don't pay HTTP overhead per image, and a content-addressed cache so repeated
+analyses are instant.  Method-comparison was already shipped under
+`/explain/compare` + `/explain/consensus` in earlier phases — not re-built.
+
+**Delivered:**
+- `miru/explain_cache.py` — SQLite-backed `ExplainCache` keyed on
+  SHA-256 of `(image_b64, method, model_name, params)`.  Singleton
+  accessor `get_cache()` reads `MIRU_CACHE_PATH` (default
+  `./miru_cache.db`) and `MIRU_CACHE_ENABLED` (default on); both env
+  vars are read at construction so tests can override per-fixture.
+  Schema: `explanation_cache(key, payload, method, model_name,
+  created_at, hit_count)` + `cache_meta(name, value)` for cumulative
+  hit/miss totals.  Thread-safe via short-lived connections + a
+  per-instance lock.  Corrupt payloads self-heal (deleted on first
+  bad read, re-populated on next miss).
+- `api/main.py` — `_run_explain_with_cache()` wraps the existing
+  compute path.  Cache **misses** record + populate as before.  Cache
+  **hits** still call `maybe_record()` so each `/explain` call is its
+  own audit event with its own `analysis_id` — only the heavy
+  computation (saliency grid, overlay, top regions, fidelity block)
+  is reused.  Cache hits return the observed lookup latency, not the
+  stored compute latency, so clients can see the real speedup.
+  `X-Miru-Cache: hit|miss|bypass` response header makes cache state
+  observable without parsing the JSON.
+- `POST /explain` — new `use_cache: bool = true` query param so
+  callers can force re-computation.
+- `POST /explain/batch` — accepts 1..32 items, runs them sequentially
+  through the cache, returns per-item results plus an `aggregate`
+  block (`total`, `success_count`, `failure_count`, `cache_hits`,
+  `cache_misses`, `mean_confidence`, `mean_fidelity`,
+  `total_latency_ms`).  One bad item doesn't abort the batch unless
+  `stop_on_error=true`; failed items return an `error` string.
+- `GET /explain/cache_stats` — `{enabled, path, total_entries,
+  total_hits, total_misses, hit_rate, size_bytes, per_method}`.
+- `POST /explain/cache_clear` — drops every entry, resets counters.
+
+**Tests:**
+- `tests/test_explain_cache.py` — 19 unit tests: key determinism + 4
+  partitioning axes, get/put round-trip, hit-count column, corrupt
+  payload self-heal, uncacheable payload skip, stats initial state +
+  after-traffic + per-method breakdown, clear, env-var truthy/falsy
+  matrix, `None` when disabled, singleton identity, reset.
+- `api/test_batch_and_cache.py` — 19 HTTP tests: first call miss,
+  second call hit, partition by method, partition by param,
+  `use_cache=false` bypass, env-disable bypass, stats reflects
+  traffic, stats when disabled, clear endpoint, batch happy path with
+  three distinct images, batch warm-cache reports all-hits, batch
+  preserves order, fidelity flag propagates uniformly, batch with
+  mixed methods, one bad item does not fail others, `stop_on_error`
+  aborts remainder, empty `items` 422, oversized 422, single item.
+
+**Ship gate:** 387 / 387 passing (322 baseline → +65 new); 5 skipped
+(4 CLIP real-backend + 1 pre-existing).
+
+---
+
+## Phase 17 — TBD
 
 Open candidates (P2/P3 from the researched roadmap, plus deferred items):
 - Expert annotation alignment (P2).
