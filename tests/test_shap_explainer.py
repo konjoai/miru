@@ -222,7 +222,9 @@ def test_api_explain_shap_method() -> None:
     """POST /explain?method=shap must return 200."""
     from fastapi.testclient import TestClient
     from api.main import app
+    from miru.models import registry
 
+    registry.register_defaults()
     client = TestClient(app)
     payload = {
         "image_b64": _synthetic_png_b64(),
