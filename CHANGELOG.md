@@ -5,6 +5,49 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [Unreleased] — Phase 17: cross-modal attention tracer (v1.2.0)
+
+### Added
+
+#### `miru/cross_modal.py` — word → image-region attribution
+- `CrossModalTracer.trace(backend, image_array, question)` — for each whitespace
+  token in `question`, ablates the word (removes it from the prompt), runs
+  `backend.infer()` on the ablated string, and computes the positive shift in the
+  spatial attention map vs. the full-question baseline.  Each row is min-max
+  normalised to `[0, 1]`.
+- `CrossModalTrace` frozen dataclass: `words`, `matrix` `(n_words, grid_h × grid_w)`
+  float32, `grid_h`, `grid_w`, `full_attention` `(grid_h, grid_w)` float32.
+- `_normalise_row` helper — min-max to `[0, 1]`; uniform → all-zero.
+- Empty question → zero-row matrix without error.
+- Single-word question → ablation to empty string handled (backend skipped;
+  baseline treated as full attention for empty context).
+- Backend-agnostic: works with any `VLMBackend`; no gradients required.
+
+#### `POST /trace` — `api/main.py`
+- `TraceRequest`: `image_b64`, `model_name` (default `"mock"`), `question`.
+- `TraceResponse`: `model_name`, `question`, `words`, `matrix`
+  `list[list[float]]`, `grid_h`, `grid_w`, `full_attention list[list[float]]`,
+  `latency_ms`.
+- Returns 400 on unknown `model_name` or undecodable `image_b64`.
+- Empty question returns 200 with `words=[]` and `matrix=[]`.
+
+### Tests
+- `tests/test_cross_modal.py` — 22 tests across unit (word count, matrix
+  shape/dtype/range, full-attention contracts, empty + single-word edge cases,
+  determinism, inter-question variation, `_normalise_row`) and API (happy path,
+  response shape, value ranges, empty question 200, unknown-model 400,
+  bad-image 400, echo fields, health regression).
+
+### Changed
+- Version bumped to `1.2.0` in `miru/__init__.py`, `miru/config.py`,
+  `pyproject.toml`.
+- `tests/test_api.py` health-version assertion updated to `1.2.0`.
+
+### Test results
+- **409 / 409 passing**, 5 skipped (4 CLIP real-backend + 1 pre-existing).
+
+---
+
 ## [Unreleased] — Phase 16: batch explain + content-addressed cache
 
 ### Added

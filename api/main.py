@@ -38,6 +38,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
 from miru import gradcam_explainer, lime_explainer
+from miru.cross_modal import CrossModalTracer
 from miru.shap_explainer import SHAPConfig, SHAPExplainer
 from miru.attention.extractor import AttentionExtractor
 from miru.bench.comparison import compare_backends
@@ -1045,6 +1046,75 @@ def _float_array_to_pil(image_array: np.ndarray) -> "Image.Image":
 
     uint8 = np.clip(image_array * 255.0, 0, 255).astype(np.uint8)
     return Image.fromarray(uint8, mode="RGB")
+
+
+# ---------------------------------------------------------------------------
+# Cross-modal trace endpoint
+# ---------------------------------------------------------------------------
+
+
+class TraceRequest(BaseModel):
+    """Request body for ``POST /trace``."""
+
+    model_config = ConfigDict(frozen=True)
+    image_b64: str = Field(..., description="Base64-encoded source image (PNG/JPEG).")
+    model_name: str = Field("mock", description="Registered backend name.")
+    question: str = Field(
+        "What is the main subject of this image?",
+        description="Natural-language question; tokenised on whitespace to produce word rows.",
+    )
+
+
+class TraceResponse(BaseModel):
+    """Response body for ``POST /trace``."""
+
+    model_config = ConfigDict(frozen=True)
+    model_name: str
+    question: str
+    words: list[str]
+    matrix: list[list[float]]
+    grid_h: int
+    grid_w: int
+    full_attention: list[list[float]]
+    latency_ms: float
+
+
+_CROSS_MODAL_TRACER = CrossModalTracer()
+
+
+@app.post("/trace", response_model=TraceResponse)
+def trace(req: TraceRequest) -> TraceResponse:
+    """Cross-modal word → image-region attribution.
+
+    For each whitespace token in *question*, the response matrix contains
+    one row of ``grid_h × grid_w`` float values in ``[0, 1]`` representing
+    how much the model's spatial attention is attributed to that word.
+
+    The attribution is computed via perturbation: removing word ``w_i`` from
+    the question and measuring the positive shift in the attention map.  This
+    is backend-agnostic and requires no gradients.
+
+    ``full_attention`` is the baseline attention map for the unmodified
+    question, returned so clients can render both the per-word heatmaps and
+    the global heatmap from one call.
+    """
+    backend = _get_backend_or_400(req.model_name)
+    image_array = _decode_to_float_array(req.image_b64)
+
+    t0 = time.perf_counter()
+    result = _CROSS_MODAL_TRACER.trace(backend, image_array, req.question)
+    latency_ms = (time.perf_counter() - t0) * 1_000.0
+
+    return TraceResponse(
+        model_name=backend.name,
+        question=req.question,
+        words=result.words,
+        matrix=result.matrix.tolist(),
+        grid_h=result.grid_h,
+        grid_w=result.grid_w,
+        full_attention=result.full_attention.tolist(),
+        latency_ms=latency_ms,
+    )
 
 
 # ---------------------------------------------------------------------------
