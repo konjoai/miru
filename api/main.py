@@ -37,6 +37,7 @@ from fastapi import FastAPI, HTTPException, Path as FastApiPath, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
+from miru.annotation import MISALIGN_THRESHOLD, compare_annotation
 from miru import gradcam_explainer, lime_explainer
 from miru.cross_modal import CrossModalTracer
 from miru.shap_explainer import SHAPConfig, SHAPExplainer
@@ -1022,6 +1023,32 @@ def _run_method(method: str, backend, image_array: np.ndarray, req):
     raise HTTPException(status_code=400, detail=f"unsupported method: {method}")
 
 
+def _validate_mask(mask: list[list[float]]) -> np.ndarray:
+    """Validate and convert a 2-D mask list to a bool numpy array.
+
+    Raises HTTP 400 on empty mask, non-rectangular rows, or oversized dims.
+    """
+    if not mask:
+        raise HTTPException(status_code=400, detail="mask must not be empty")
+    n_rows = len(mask)
+    n_cols = len(mask[0]) if mask else 0
+    if n_rows > MAX_MASK_DIM or n_cols > MAX_MASK_DIM:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"mask dimensions {n_rows}×{n_cols} exceed the limit "
+                f"{MAX_MASK_DIM}×{MAX_MASK_DIM}."
+            ),
+        )
+    for i, row in enumerate(mask):
+        if len(row) != n_cols:
+            raise HTTPException(
+                status_code=400,
+                detail=f"mask row {i} has {len(row)} columns; expected {n_cols}.",
+            )
+    return np.array(mask, dtype=np.float32)
+
+
 def _decode_to_float_array(image_b64: str) -> np.ndarray:
     """Decode a base64 image to a float32 (H, W, 3) array in [0, 1].
 
@@ -1046,6 +1073,139 @@ def _float_array_to_pil(image_array: np.ndarray) -> "Image.Image":
 
     uint8 = np.clip(image_array * 255.0, 0, 255).astype(np.uint8)
     return Image.fromarray(uint8, mode="RGB")
+
+
+# ---------------------------------------------------------------------------
+# Expert annotation alignment endpoint
+# ---------------------------------------------------------------------------
+
+MAX_MASK_DIM = 512  # each axis; prevents unbounded memory allocation
+
+_ANNOTATION_ALIGNMENT_DESCRIPTION = (
+    "Compare a model's saliency map against a human-supplied binary mask. "
+    "Returns IoU, AUC-ROC, Spearman correlation, and a 'misaligned' flag "
+    "('right answer, wrong reasoning') when the answer is correct but "
+    f"IoU < {MISALIGN_THRESHOLD}."
+)
+
+
+class AnnotateRequest(BaseModel):
+    """Request body for ``POST /annotate``."""
+
+    model_config = ConfigDict(frozen=True)
+    image_b64: str = Field(..., description="Base64-encoded source image (PNG/JPEG).")
+    model_name: str = Field("mock", description="Registered backend name.")
+    method: str = Field("attention", description=f"Explanation method. Implemented: {IMPLEMENTED_METHODS}.")
+    question: str = Field("Where is the salient region?", description="Prompt to condition the backend.")
+    mask: list[list[float]] = Field(
+        ...,
+        description=(
+            "Binary ground-truth mask as a 2-D list of 0/1 values. "
+            f"Each axis ≤ {MAX_MASK_DIM} pixels."
+        ),
+    )
+    answer_correct: bool = Field(
+        False,
+        description=(
+            "Set to true when the model's answer matches your expected answer. "
+            "Used to compute the 'misaligned' flag."
+        ),
+    )
+    top_pct: float = Field(
+        0.20, gt=0.0, lt=1.0,
+        description="Fraction of saliency pixels used as threshold for IoU.",
+    )
+    top_k: int = Field(5, ge=1, le=64, description="Top regions returned in the explain block.")
+    alpha: float = Field(0.5, ge=0.0, le=1.0)
+    colormap: str = Field("jet")
+    n_samples: int = Field(64, ge=2, le=MAX_LIME_SAMPLES)
+    n_segments: int = Field(36, ge=4, le=MAX_LIME_SEGMENTS)
+    occlusion_grid: int = Field(8, ge=2, le=MAX_OCCLUSION_GRID)
+    shap_grid: int = Field(7, ge=2, le=16)
+    shap_samples: int = Field(32, ge=2, le=MAX_LIME_SAMPLES)
+
+
+class AlignmentBlock(BaseModel):
+    """Alignment scores between the saliency map and the human mask."""
+
+    model_config = ConfigDict(frozen=True)
+    iou: float
+    auc_roc: float
+    spearman_r: float
+    top_pct: float
+    misaligned: bool
+
+
+class AnnotateResponse(BaseModel):
+    """Response body for ``POST /annotate``."""
+
+    model_config = ConfigDict(frozen=True)
+    model_name: str
+    method: str
+    answer: str
+    confidence: float
+    overlay_b64: str
+    attention_grid: list[list[float]]
+    top_regions: list[TopRegion]
+    alignment: AlignmentBlock
+    latency_ms: float
+
+
+@app.post("/annotate", response_model=AnnotateResponse)
+def annotate(req: AnnotateRequest) -> AnnotateResponse:
+    """Run one explanation then score it against a human-annotated mask.
+
+    The *mask* is a 2-D list of 0/1 floats matching the annotated region.
+    It does not need to match the attention grid resolution — alignment
+    metrics handle the resampling internally.
+
+    The ``misaligned`` flag in the response is set when ``answer_correct=true``
+    and the spatial IoU is below the misalignment threshold
+    (``MISALIGN_THRESHOLD = 0.3``), indicating "right answer, wrong reasoning".
+    """
+    _validate_method(req.method)
+    backend = _get_backend_or_400(req.model_name)
+    image_array = _decode_to_float_array(req.image_b64)
+
+    mask_arr = _validate_mask(req.mask)
+
+    t0 = time.perf_counter()
+    out, saliency_grid = _run_method(req.method, backend, image_array, req)
+    alignment = compare_annotation(
+        saliency_grid,
+        mask_arr,
+        answer_correct=req.answer_correct,
+        top_pct=req.top_pct,
+    )
+    latency_ms = (time.perf_counter() - t0) * 1_000.0
+
+    top = _EXTRACTOR.top_k_regions(saliency_grid, k=req.top_k)
+    try:
+        overlay_b64 = generate_overlay(
+            req.image_b64, saliency_grid, alpha=req.alpha, colormap=req.colormap
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"overlay generation failed: {exc}"
+        ) from exc
+
+    return AnnotateResponse(
+        model_name=backend.name,
+        method=req.method,
+        answer=out.answer,
+        confidence=float(out.confidence),
+        overlay_b64=overlay_b64,
+        attention_grid=saliency_grid.astype(float).tolist(),
+        top_regions=[TopRegion(row=r, col=c, score=s) for r, c, s in top],
+        alignment=AlignmentBlock(
+            iou=alignment.iou,
+            auc_roc=alignment.auc_roc,
+            spearman_r=alignment.spearman_r,
+            top_pct=alignment.top_pct,
+            misaligned=alignment.misaligned,
+        ),
+        latency_ms=latency_ms,
+    )
 
 
 # ---------------------------------------------------------------------------

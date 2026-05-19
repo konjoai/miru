@@ -1,8 +1,8 @@
 # PLAN.md — Miru Roadmap
 
 **Project:** Miru — Multimodal Reasoning Tracer  
-**Current version:** v1.2.0  
-**Status:** Cross-modal attention tracer, 409 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
+**Current version:** v1.3.0  
+**Status:** Expert annotation alignment, 441 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 
@@ -498,11 +498,34 @@ which tokens in a question drive attention to which spatial regions.
 
 ---
 
-## Phase 18 — TBD
+## Phase 18 — Expert Annotation Alignment (v1.3.0) ✅ COMPLETE
+
+**Goal:** Let developers supply a human-drawn ground-truth mask and receive
+concrete spatial alignment scores and a "right answer, wrong reasoning" flag.
+
+**Delivered:**
+- `miru/annotation.py` — `compare_annotation(saliency, mask, *, answer_correct, top_pct)`
+  returns `AnnotationAlignment{iou, auc_roc, spearman_r, top_pct, misaligned}`.
+  IoU reuses the existing `iou_at_topk_pct` harness.  AUC-ROC reuses `auc_roc`.
+  Spearman rank correlation is pure NumPy via `_rank` + `_spearman` helpers.
+  `misaligned = answer_correct AND iou < MISALIGN_THRESHOLD (0.3)`.
+- `POST /annotate` in `api/main.py` — `AnnotateRequest` / `AnnotateResponse`;
+  full explain fields (overlay, attention_grid, top_regions, answer, confidence)
+  plus an `AlignmentBlock`. Mask validated: non-empty, rectangular, ≤ 512×512.
+  Returns 400 on bad image, unknown model, unknown method, empty/jagged/oversized mask.
+- `tests/test_annotation.py` — 32 tests: unit (perfect/inverted/uniform alignment,
+  Spearman sign, misaligned flag scenarios, resolution mismatch, error paths,
+  helper unit tests) + API (happy path, alignment block presence, value ranges,
+  misaligned flag, all error contracts, lime method, top_pct round-trip, health).
+
+**Ship gate:** 441/441 tests pass; all 409 prior tests still pass; 5 skipped.
+
+---
+
+## Phase 19 — TBD
 
 Open candidates (P2/P3 from the researched roadmap, plus deferred items):
-- Expert annotation alignment (P2) — `POST /analyze/{id}/compare_annotation`,
-  spatial IoU + Spearman rank correlation, "right answer / wrong reasoning" flag.
+- ~~Expert annotation alignment (P2)~~ ✅ shipped in Phase 18.
 - Dataset-level saliency analytics (P2) — `POST /analyze/batch`, aggregate
   heatmap, spurious-correlation detector.
 - Intra-modal + cross-modal joint attribution (informed by arXiv 2509.22415) —
