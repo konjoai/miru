@@ -5,6 +5,43 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [Unreleased] — Phase 21: scale-space attention ensemble (v1.5.0)
+
+### Added
+
+#### `miru/ensemble.py` — multi-scale attention aggregation
+- `AttentionEnsemble(scales, weights, extractor)` — runs `backend.infer()` at
+  each scale, normalises each attention map via `AttentionExtractor`, and
+  produces a weighted average re-normalised to `[0, 1]`.
+- `EnsembleResult` frozen dataclass: `ensemble_grid`, `per_scale` list,
+  `scales_used`, `scales_skipped`, `grid_h`, `grid_w`.
+- `_bilinear_resize_image(image, scale)` — pure-NumPy bilinear image resize;
+  returns `None` when either dimension falls below `MIN_DIM (4px)`.
+- `DEFAULT_SCALES = (0.5, 1.0, 1.5)` exported as module constant.
+- All-fail fallback: returns all-zero grid + warning instead of raising.
+
+#### `POST /explain/ensemble` — `api/main.py`
+- `EnsembleRequest`: `image_b64`, `model_name`, `question`, `scales` (1–5,
+  each in `(0, 4]`), optional `weights`, standard `alpha`/`colormap`/`top_k`.
+- `EnsembleResponse`: `ensemble_grid`, `per_scale` (scale + grid per entry),
+  `scales_used`, `scales_skipped`, `top_regions`, `overlay_b64`, `latency_ms`.
+- 400 on unknown model, bad image, out-of-range scale, weight-length mismatch.
+
+### Tests
+- `tests/test_ensemble.py` — 27 tests: resize helper contracts, unit ensemble
+  (single-scale, value range, scale tracking, custom weights, error cases, all-
+  fail zeros, resolution forwarding), API (happy path, response fields, grid
+  values, per_scale count, all error contracts, echo, health regression).
+
+### Changed
+- Version bumped to `1.5.0`.
+- `tests/test_api.py` health-version assertion updated to `1.5.0`.
+
+### Test results
+- **497 / 497 passing**, 5 skipped.
+
+---
+
 ## [Unreleased] — Phase 20: history · calibration · diff
 
 ### Added

@@ -39,6 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from miru.annotation import MISALIGN_THRESHOLD, compare_annotation
 from miru.dataset_analytics import analyse_dataset
+from miru.ensemble import AttentionEnsemble, DEFAULT_SCALES
 from miru import gradcam_explainer, lime_explainer
 from miru.cross_modal import CrossModalTracer
 from miru.shap_explainer import SHAPConfig, SHAPExplainer
@@ -1171,6 +1172,132 @@ def _float_array_to_pil(image_array: np.ndarray) -> "Image.Image":
 
     uint8 = np.clip(image_array * 255.0, 0, 255).astype(np.uint8)
     return Image.fromarray(uint8, mode="RGB")
+
+
+# ---------------------------------------------------------------------------
+# Scale-space attention ensemble endpoint
+# ---------------------------------------------------------------------------
+
+MAX_ENSEMBLE_SCALES = 5
+
+
+class EnsembleRequest(BaseModel):
+    """Request body for ``POST /explain/ensemble``."""
+
+    model_config = ConfigDict(frozen=True)
+    image_b64: str = Field(..., description="Base64-encoded source image (PNG/JPEG).")
+    model_name: str = Field("mock", description="Registered backend name.")
+    question: str = Field("Where is the salient region?")
+    scales: list[float] = Field(
+        default_factory=lambda: list(DEFAULT_SCALES),
+        min_length=1,
+        max_length=MAX_ENSEMBLE_SCALES,
+        description=(
+            f"Scale factors relative to the input image. 1..{MAX_ENSEMBLE_SCALES} values, "
+            "each in (0, 4]."
+        ),
+    )
+    weights: list[float] | None = Field(
+        None,
+        description=(
+            "Optional per-scale weights (same length as scales). "
+            "Defaults to uniform weighting."
+        ),
+    )
+    alpha: float = Field(0.5, ge=0.0, le=1.0)
+    colormap: str = Field("jet")
+    top_k: int = Field(5, ge=1, le=64)
+
+
+class PerScaleResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    scale: float
+    attention_grid: list[list[float]]
+
+
+class EnsembleResponse(BaseModel):
+    """Response body for ``POST /explain/ensemble``."""
+
+    model_config = ConfigDict(frozen=True)
+    model_name: str
+    question: str
+    scales_requested: list[float]
+    scales_used: list[float]
+    scales_skipped: list[float]
+    ensemble_grid: list[list[float]]
+    per_scale: list[PerScaleResult]
+    top_regions: list[TopRegion]
+    overlay_b64: str
+    latency_ms: float
+
+
+@app.post("/explain/ensemble", response_model=EnsembleResponse)
+def explain_ensemble(req: EnsembleRequest) -> EnsembleResponse:
+    """Multi-scale attention ensemble for more robust saliency maps.
+
+    Runs the backend at each requested scale factor (relative to the input
+    image size), normalises each attention map to a fixed grid, and produces
+    a weighted average.  The result is more robust than single-scale attention
+    because models are sensitive to input resolution — aggregating across
+    scales captures a larger fraction of the true saliency signal.
+
+    Scales that produce images below 4 pixels in either dimension are silently
+    skipped.  The ``scales_skipped`` field in the response reports which ones
+    were dropped.
+    """
+    backend = _get_backend_or_400(req.model_name)
+    image_array = _decode_to_float_array(req.image_b64)
+
+    if req.weights is not None and len(req.weights) != len(req.scales):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"weights length ({len(req.weights)}) must match "
+                f"scales length ({len(req.scales)})."
+            ),
+        )
+    for s in req.scales:
+        if not (0.0 < s <= 4.0):
+            raise HTTPException(
+                status_code=400,
+                detail=f"each scale must be in (0, 4], got {s!r}.",
+            )
+
+    weights_tuple = tuple(req.weights) if req.weights is not None else None
+    ensembler = AttentionEnsemble(
+        scales=tuple(req.scales),
+        weights=weights_tuple,
+    )
+
+    t0 = time.perf_counter()
+    result = ensembler.run(backend, image_array, req.question)
+    latency_ms = (time.perf_counter() - t0) * 1_000.0
+
+    top = _EXTRACTOR.top_k_regions(result.ensemble_grid, k=req.top_k)
+    try:
+        overlay_b64 = generate_overlay(
+            req.image_b64, result.ensemble_grid, alpha=req.alpha, colormap=req.colormap
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"overlay generation failed: {exc}"
+        ) from exc
+
+    return EnsembleResponse(
+        model_name=backend.name,
+        question=req.question,
+        scales_requested=list(req.scales),
+        scales_used=result.scales_used,
+        scales_skipped=result.scales_skipped,
+        ensemble_grid=result.ensemble_grid.astype(float).tolist(),
+        per_scale=[
+            PerScaleResult(scale=s, attention_grid=g.astype(float).tolist())
+            for s, g in result.per_scale
+        ],
+        top_regions=[TopRegion(row=r, col=c, score=sc) for r, c, sc in top],
+        overlay_b64=overlay_b64,
+        latency_ms=latency_ms,
+    )
 
 
 # ---------------------------------------------------------------------------

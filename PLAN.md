@@ -1,8 +1,8 @@
 # PLAN.md — Miru Roadmap
 
 **Project:** Miru — Multimodal Reasoning Tracer  
-**Current version:** v1.4.0  
-**Status:** Dataset-level saliency analytics, 470 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
+**Current version:** v1.5.0  
+**Status:** Scale-space attention ensemble (Phase 21), history · calibration · diff (Phase 20), 497 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 
@@ -588,7 +588,34 @@ rebase; renumbered to **Phase 20** here because main shipped Phases
 
 ---
 
-## Phase 21 — TBD
+## Phase 21 — Scale-Space Attention Ensemble (v1.5.0) ✅ COMPLETE
+
+**Goal:** Run inference at multiple image scales and average the attention
+maps for more robust saliency — directly addressing the discovery finding that
+single-scale cross-attention captures only 52–75% of the true saliency signal
+(arXiv 2509.22415).
+
+**Delivered:**
+- `miru/ensemble.py` — `AttentionEnsemble` class with configurable scales and
+  weights; `_bilinear_resize_image` pure-NumPy resize helper; `EnsembleResult`
+  frozen dataclass. Scales below `MIN_DIM (4px)` silently skipped; all-fail
+  case returns all-zero grid with warning. Final grid re-normalised to `[0, 1]`.
+- `POST /explain/ensemble` in `api/main.py` — `EnsembleRequest` (scales 1–5,
+  optional weights, standard overlay/colormap/top_k params) /
+  `EnsembleResponse` (ensemble_grid, per_scale, scales_used, scales_skipped,
+  top_regions, overlay_b64, latency_ms). Validates scale range (0, 4] and
+  weight-length match.
+- `tests/test_ensemble.py` — 27 tests: resize helper (shape, dtype, range,
+  too-small → None), `AttentionEnsemble` unit (single-scale, value range,
+  scales_used/skipped tracking, per_scale count, custom weights, empty scales
+  error, mismatch error, all-fail zeros, resolution forwarding), API (happy
+  path, response fields, grid values, per_scale count, error contracts, echo).
+
+**Ship gate:** 497/497 tests pass; all 491 prior tests still pass; 5 skipped.
+
+---
+
+## Phase 22 — TBD
 
 Open candidates (P2/P3 from the researched roadmap, plus deferred items):
 - Region-of-interest (ROI) targeted explanation — extend `/explain`
