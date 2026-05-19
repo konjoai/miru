@@ -1,8 +1,8 @@
 # PLAN.md — Miru Roadmap
 
 **Project:** Miru — Multimodal Reasoning Tracer  
-**Current version:** v1.3.0  
-**Status:** Expert annotation alignment, 441 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
+**Current version:** v1.4.0  
+**Status:** Dataset-level saliency analytics, 470 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 
@@ -522,12 +522,35 @@ concrete spatial alignment scores and a "right answer, wrong reasoning" flag.
 
 ---
 
-## Phase 19 — TBD
+## Phase 19 — Dataset-Level Saliency Analytics (v1.4.0) ✅ COMPLETE
+
+**Goal:** Aggregate saliency maps across a dataset of images, produce a
+mean heatmap, and flag spurious-correlation candidates.
+
+**Delivered:**
+- `miru/dataset_analytics.py` — `aggregate_saliency()`, `detect_spurious()`,
+  `analyse_dataset()` + `DatasetAnalytics` frozen dataclass.  All grids are
+  bilinearly resampled to the first grid's shape.  Spurious detection:
+  mean ≥ `SPURIOUS_MEAN_THRESHOLD (0.5)` AND CV < `SPURIOUS_CV_THRESHOLD (0.5)`;
+  suppressed when n < `MIN_SAMPLES_FOR_SPURIOUS (3)`.
+- `POST /analyze/batch` in `api/main.py` — `DatasetAnalyticsRequest` (1–64
+  images, per-image question, shared model/method/params) /
+  `DatasetAnalyticsResponse` (mean_grid, std_grid, cv_grid, spurious_cells,
+  per_image results, latency_ms).
+- `tests/test_dataset_analytics.py` — 29 tests: unit (aggregate shape/dtype/
+  mean/std contracts, spurious flag logic, threshold edge cases, empty-list
+  error, analyse_dataset pipeline) + API (happy path, response shape, index
+  order, value ranges, single-image no-spurious, error contracts).
+
+**Ship gate:** 470/470 tests pass; all 441 prior tests still pass; 5 skipped.
+
+---
+
+## Phase 20 — TBD
 
 Open candidates (P2/P3 from the researched roadmap, plus deferred items):
 - ~~Expert annotation alignment (P2)~~ ✅ shipped in Phase 18.
-- Dataset-level saliency analytics (P2) — `POST /analyze/batch`, aggregate
-  heatmap, spurious-correlation detector.
+- ~~Dataset-level saliency analytics (P2)~~ ✅ shipped in Phase 19.
 - Intra-modal + cross-modal joint attribution (informed by arXiv 2509.22415) —
   upgrade the attention extractor to sum intra-visual token interactions with
   the cross-modal signal for more faithful maps (Medium complexity).
