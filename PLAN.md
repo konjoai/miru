@@ -1,8 +1,8 @@
 # PLAN.md — Miru Roadmap
 
 **Project:** Miru — Multimodal Reasoning Tracer  
-**Current version:** v1.1.0  
-**Status:** Grad-CAM + visual explainability demo, 252 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
+**Current version:** v1.2.0  
+**Status:** Cross-modal attention tracer, 409 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 
@@ -472,18 +472,47 @@ analyses are instant.  Method-comparison was already shipped under
 
 ---
 
-## Phase 17 — TBD
+## Phase 17 — Cross-Modal Attention Tracer (v1.2.0) ✅ COMPLETE
+
+**Goal:** Ship a word→image-region attribution matrix so developers can see
+which tokens in a question drive attention to which spatial regions.
+
+**Delivered:**
+- `miru/cross_modal.py` — `CrossModalTracer` + `CrossModalTrace` dataclass.
+  Perturbation-based: for each whitespace token, ablate the word from the
+  question, measure the positive shift in the spatial attention map, and
+  min-max normalise to `[0, 1]`. Backend-agnostic, no gradients required.
+  Returns `matrix: (n_words, grid_h × grid_w)` float32 + baseline
+  `full_attention: (grid_h, grid_w)`.
+- `POST /trace` in `api/main.py` — `TraceRequest` / `TraceResponse` schemas;
+  `model_name`, `question`, `image_b64` in; `words`, `matrix`, `grid_h`,
+  `grid_w`, `full_attention`, `latency_ms` out.
+- `tests/test_cross_modal.py` — 22 tests: word count, matrix shape/dtype/range,
+  full-attention shape/dtype/range, empty-question edge case, single-word edge
+  case, determinism, inter-question variation, `_normalise_row` helper,
+  API happy-path, response shape, matrix values, full-attention shape/values,
+  empty question 200, unknown-model 400, bad-image 400, model-name echo,
+  health regression guard.
+
+**Ship gate:** 409/409 tests pass; all 387 prior tests still pass; 5 skipped.
+
+---
+
+## Phase 18 — TBD
 
 Open candidates (P2/P3 from the researched roadmap, plus deferred items):
-- Expert annotation alignment (P2).
-- Dataset-level saliency analytics (P2).
-- Cross-modal attention tracer (P2).
+- Expert annotation alignment (P2) — `POST /analyze/{id}/compare_annotation`,
+  spatial IoU + Spearman rank correlation, "right answer / wrong reasoning" flag.
+- Dataset-level saliency analytics (P2) — `POST /analyze/batch`, aggregate
+  heatmap, spurious-correlation detector.
+- Intra-modal + cross-modal joint attribution (informed by arXiv 2509.22415) —
+  upgrade the attention extractor to sum intra-visual token interactions with
+  the cross-modal signal for more faithful maps (Medium complexity).
 - True Grad-CAM via torch-loaded CLIP-RN50 (P3).
-- Native VLM streaming backend (LLaVA / Idefics / Qwen-VL with token-level
-  attention) so `/analyze/stream` produces genuinely incremental reasoning
-  instead of replaying a single-shot inference (P3).
-- Real-image benchmark slice (P3) — VQA-X or COCO-Saliency behind the
-  existing metric interface, alongside the synthetic baseline.
-- Counterfactual generation, TCAV concept probes, language SDK (P3).
-- gRPC alternative to the FastAPI surface for in-cluster low-latency
-  inference (P3).
+- Sparse Autoencoder (SAE) concept-based explanations via Prisma (arXiv 2504.19475)
+  for the EU AI Act report narrative (P3).
+- Native VLM streaming backend (LLaVA / Qwen-VL, token-level attention) (P3).
+- Real-image benchmark slice — VQA-X or COCO-Saliency + Saliency-Bench
+  (arXiv 2310.08537v3) as a public fidelity anchor (P3).
+- Counterfactual generation, TCAV / Visual-TCAV concept probes (P3).
+- gRPC surface for in-cluster low-latency inference (P3).
