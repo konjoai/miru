@@ -5,6 +5,48 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [Unreleased] — Phase 19: dataset-level saliency analytics (v1.4.0)
+
+### Added
+
+#### `miru/dataset_analytics.py` — batch saliency aggregation
+- `aggregate_saliency(grids)` — cell-wise mean + std over a list of 2-D
+  saliency grids; bilinearly resamples to the first grid's shape.
+- `detect_spurious(mean_grid, std_grid, *, mean_threshold, cv_threshold,
+  n_samples)` — flags cells where mean ≥ threshold AND CV (std/mean) <
+  threshold.  Suppressed when n < 3 (variance unreliable from few samples).
+  Returns ``(bool_mask, [(row, col), ...])`` sorted by descending mean.
+- `analyse_dataset(grids, ...)` — full pipeline; returns `DatasetAnalytics`
+  frozen dataclass: `mean_grid`, `std_grid`, `cv_grid`, `spurious_mask`,
+  `spurious_cells`, `n_samples`, `grid_h`, `grid_w`.
+- `SPURIOUS_MEAN_THRESHOLD = 0.5`, `SPURIOUS_CV_THRESHOLD = 0.5`,
+  `MIN_SAMPLES_FOR_SPURIOUS = 3` exposed as module constants.
+
+#### `POST /analyze/batch` — `api/main.py`
+- `DatasetAnalyticsRequest`: `images` (1..64 `DatasetBatchItem`), `model_name`,
+  `method`, `mean_threshold`, `cv_threshold`, and all per-method tuning knobs.
+- `DatasetAnalyticsResponse`: `mean_grid`, `std_grid`, `cv_grid`,
+  `spurious_cells` (with `mean_saliency` per cell), `per_image` (index, answer,
+  confidence, attention_grid), `n_images`, `latency_ms`.
+- 400 on unknown model/method or bad image; 422 on empty images list.
+
+### Tests
+- `tests/test_dataset_analytics.py` — 29 tests: unit (aggregate contracts,
+  spurious flag all four quadrant cases, sort order, zero-mean guard,
+  analyse_dataset shape/range/std-zero/all-spurious/empty-error) + API
+  (happy path, response shape, index order, mean-grid values in range,
+  spurious list present, single-image no-spurious, model echo, error contracts,
+  health regression).
+
+### Changed
+- Version bumped to `1.4.0`.
+- `tests/test_api.py` health-version assertion updated to `1.4.0`.
+
+### Test results
+- **470 / 470 passing**, 5 skipped.
+
+---
+
 ## [Unreleased] — Phase 18: expert annotation alignment (v1.3.0)
 
 ### Added

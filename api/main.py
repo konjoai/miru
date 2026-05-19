@@ -38,6 +38,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
 from miru.annotation import MISALIGN_THRESHOLD, compare_annotation
+from miru.dataset_analytics import analyse_dataset
 from miru import gradcam_explainer, lime_explainer
 from miru.cross_modal import CrossModalTracer
 from miru.shap_explainer import SHAPConfig, SHAPExplainer
@@ -1073,6 +1074,147 @@ def _float_array_to_pil(image_array: np.ndarray) -> "Image.Image":
 
     uint8 = np.clip(image_array * 255.0, 0, 255).astype(np.uint8)
     return Image.fromarray(uint8, mode="RGB")
+
+
+# ---------------------------------------------------------------------------
+# Dataset-level saliency analytics endpoint
+# ---------------------------------------------------------------------------
+
+MAX_DATASET_BATCH = 64  # images per /analyze/batch call
+
+
+class DatasetBatchItem(BaseModel):
+    """One image in a dataset analytics batch."""
+
+    model_config = ConfigDict(frozen=True)
+    image_b64: str = Field(..., description="Base64-encoded source image.")
+    question: str = Field("Where is the salient region?")
+
+
+class SpuriousCell(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    row: int
+    col: int
+    mean_saliency: float
+
+
+class DatasetAnalyticsRequest(BaseModel):
+    """Request body for ``POST /analyze/batch``."""
+
+    model_config = ConfigDict(frozen=True)
+    images: list[DatasetBatchItem] = Field(
+        ..., min_length=1, max_length=MAX_DATASET_BATCH,
+        description=f"Per-image items. 1..{MAX_DATASET_BATCH}.",
+    )
+    model_name: str = Field("mock", description="Backend for all images.")
+    method: str = Field("attention", description=f"Explanation method. Implemented: {IMPLEMENTED_METHODS}.")
+    mean_threshold: float = Field(
+        0.5, gt=0.0, lt=1.0,
+        description="Mean-saliency threshold for spurious-correlation detection.",
+    )
+    cv_threshold: float = Field(
+        0.5, gt=0.0,
+        description="CV (std/mean) upper bound for spurious-correlation detection.",
+    )
+    top_k: int = Field(5, ge=1, le=64)
+    n_samples: int = Field(64, ge=2, le=MAX_LIME_SAMPLES)
+    n_segments: int = Field(36, ge=4, le=MAX_LIME_SEGMENTS)
+    occlusion_grid: int = Field(8, ge=2, le=MAX_OCCLUSION_GRID)
+    shap_grid: int = Field(7, ge=2, le=16)
+    shap_samples: int = Field(32, ge=2, le=MAX_LIME_SAMPLES)
+
+
+class PerImageResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    index: int
+    answer: str
+    confidence: float
+    attention_grid: list[list[float]]
+
+
+class DatasetAnalyticsResponse(BaseModel):
+    """Response body for ``POST /analyze/batch``."""
+
+    model_config = ConfigDict(frozen=True)
+    model_name: str
+    method: str
+    n_images: int
+    mean_grid: list[list[float]]
+    std_grid: list[list[float]]
+    cv_grid: list[list[float]]
+    spurious_cells: list[SpuriousCell]
+    per_image: list[PerImageResult]
+    latency_ms: float
+
+
+@app.post("/analyze/batch", response_model=DatasetAnalyticsResponse)
+def analyze_batch(req: DatasetAnalyticsRequest) -> DatasetAnalyticsResponse:
+    """Run saliency extraction over a batch of images and aggregate statistics.
+
+    Each image is explained with the chosen method.  The resulting saliency
+    grids are averaged cell-wise to produce a dataset-level heatmap.
+    Cells that are both high-saliency (mean ≥ ``mean_threshold``) and
+    low-variance (coefficient of variation < ``cv_threshold``) are flagged
+    as spurious-correlation candidates — they likely correspond to dataset
+    artefacts (watermarks, fixed borders, overlays) rather than semantically
+    meaningful regions.
+
+    Spurious detection is suppressed when ``len(images) < 3`` because
+    variance estimates from very small samples are not reliable.
+    """
+    _validate_method(req.method)
+    backend = _get_backend_or_400(req.model_name)
+
+    t0 = time.perf_counter()
+    grids: list[np.ndarray] = []
+    per_image: list[PerImageResult] = []
+
+    for idx, item in enumerate(req.images):
+        image_array = _decode_to_float_array(item.image_b64)
+        item_req = ExplainRequest(
+            image_b64=item.image_b64,
+            model_name=req.model_name,
+            method=req.method,
+            question=item.question,
+            top_k=req.top_k,
+            n_samples=req.n_samples,
+            n_segments=req.n_segments,
+            occlusion_grid=req.occlusion_grid,
+            shap_grid=req.shap_grid,
+            shap_samples=req.shap_samples,
+        )
+        out, saliency = _run_method(req.method, backend, image_array, item_req)
+        grids.append(saliency)
+        per_image.append(PerImageResult(
+            index=idx,
+            answer=out.answer,
+            confidence=float(out.confidence),
+            attention_grid=saliency.astype(float).tolist(),
+        ))
+
+    analytics = analyse_dataset(
+        grids,
+        mean_threshold=req.mean_threshold,
+        cv_threshold=req.cv_threshold,
+    )
+    latency_ms = (time.perf_counter() - t0) * 1_000.0
+
+    spurious = [
+        SpuriousCell(row=r, col=c, mean_saliency=float(analytics.mean_grid[r, c]))
+        for r, c in analytics.spurious_cells
+    ]
+
+    return DatasetAnalyticsResponse(
+        model_name=backend.name,
+        method=req.method,
+        n_images=analytics.n_samples,
+        mean_grid=analytics.mean_grid.astype(float).tolist(),
+        std_grid=analytics.std_grid.astype(float).tolist(),
+        cv_grid=analytics.cv_grid.astype(float).tolist(),
+        spurious_cells=spurious,
+        per_image=per_image,
+        latency_ms=latency_ms,
+    )
 
 
 # ---------------------------------------------------------------------------
