@@ -5,6 +5,45 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [Unreleased] — Phase 18: expert annotation alignment (v1.3.0)
+
+### Added
+
+#### `miru/annotation.py` — alignment scoring
+- `compare_annotation(saliency, mask, *, answer_correct, top_pct)` —
+  scores a saliency grid against a binary ground-truth mask supplied by a
+  human annotator.
+- `AnnotationAlignment` frozen dataclass: `iou`, `auc_roc`, `spearman_r`,
+  `top_pct`, `misaligned`.
+- Reuses `iou_at_topk_pct` and `auc_roc` from `miru.bench.metrics`.
+- `_spearman` + `_rank` — pure-NumPy Spearman rank correlation; no SciPy.
+- `misaligned = answer_correct AND iou < MISALIGN_THRESHOLD (0.3)`.
+
+#### `POST /annotate` — `api/main.py`
+- `AnnotateRequest`: all `ExplainRequest` fields + `mask` (2-D list of 0/1),
+  `answer_correct`, `top_pct`.
+- `AnnotateResponse`: full explain fields (overlay, grid, top regions,
+  answer, confidence, latency) + `AlignmentBlock`.
+- Mask validation: non-empty, rectangular, ≤ 512×512; 400 otherwise.
+- `_validate_mask` helper extracts validation from the endpoint handler.
+
+### Tests
+- `tests/test_annotation.py` — 32 tests: unit (perfect/inverted/uniform
+  alignment, Spearman sign, misaligned flag, resolution mismatch, error
+  paths, helper unit tests) + API (happy path, block presence, value ranges,
+  misaligned=False when answer_correct=False, all error contracts, lime
+  method, top_pct round-trip, health regression).
+
+### Changed
+- Version bumped to `1.3.0` in `miru/__init__.py`, `miru/config.py`,
+  `pyproject.toml`.
+- `tests/test_api.py` health-version assertion updated to `1.3.0`.
+
+### Test results
+- **441 / 441 passing**, 5 skipped.
+
+---
+
 ## [Unreleased] — Phase 17: cross-modal attention tracer (v1.2.0)
 
 ### Added
