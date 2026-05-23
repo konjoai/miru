@@ -5,6 +5,66 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [Unreleased] — Phase 20: history · calibration · diff
+
+### Added
+
+#### `miru/history.py` — query + calibration core
+- `query_records(...)` — filtered + paginated newest-first listing.
+  Filters: `method`, `model`, `min_confidence`, `since` (ISO-8601).
+  Pagination: `limit ∈ 1..200`, `offset ≥ 0`.  Drains the singleton
+  recorder before scanning so records produced microseconds ago by
+  `maybe_record` are visible (same fix `find_record_by_id` uses).
+- `compute_calibration(records, n_bins)` — Expected Calibration Error
+  + per-bin reliability curve.  ECE = Σ (n_b/N) × |conf_b − fid_b|.
+  Skips records without a fidelity score; clamps out-of-range values;
+  validates `n_bins ∈ 2..50`; empty population returns `ece=0.0`.
+
+#### `miru/diff.py` — post-hoc diff of two analysis records
+- `diff_records(rec_a, rec_b, top_n)` — aligns attention grids,
+  computes cosine similarity (on raw vectors, sign/magnitude
+  preserved), L2 distance (on min-max normalised grids), signed delta
+  grid, top-N changed cells, and a human-readable summary using a 3×3
+  spatial grid ("A focused more on the bottom-left; B shifted toward
+  the top-right").
+
+#### `POST /explain/diff`
+- Accepts two `analysis_id`s.  Returns `DiffResponse` with cosine,
+  L2, delta grid, top changed cells, and summary string.
+- 400 on identical IDs.  404 on missing record.
+
+#### `GET /explain/history`
+- Query: `limit ∈ 1..200`, `offset ≥ 0`, `method`, `model`,
+  `min_confidence ∈ [0, 1]`, `since` (ISO-8601).
+- Returns paginated `HistoryItem[]` + `total`.  Stripped of bulky
+  `attention_grid` / `top_regions`; fetch the full payload via
+  the existing `/analysis/{id}/export?format=json`.
+
+#### `GET /explain/calibration`
+- Query: `n_bins ∈ 2..50`, `method`, `model`, `limit ≤ 200`.
+- Returns ECE scalar + bins + filter echo.
+- Empty / no-fidelity population returns `n=0, ece=0.0` (clients
+  render an "insufficient data" state).
+
+### Tests
+- `tests/test_history.py` — 22 unit tests
+- `tests/test_diff.py` — 13 unit tests
+- `api/test_history_diff_calibration.py` — 17 HTTP tests
+- Combined with main's Phase 19 (470 baseline) → 491 / 491 passing total once
+  rebased; +52 new vs. local 387 baseline.
+
+### Notes
+- Export (`/analysis/{id}/export?format=…`) was already shipped in
+  Phase 14 — not re-built.
+- The three new endpoints compose naturally: history is the
+  foundation; calibration is one aggregation over the filtered view;
+  diff is a 2-record operation that reuses `find_record_by_id`.
+- This work was renumbered from "Phase 17" → "Phase 20" during rebase
+  because main shipped Phases 17 (cross-modal), 18 (annotation), and
+  19 (dataset analytics) in parallel.
+
+---
+
 ## [Unreleased] — Phase 19: dataset-level saliency analytics (v1.4.0)
 
 ### Added

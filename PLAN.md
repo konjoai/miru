@@ -546,11 +546,57 @@ mean heatmap, and flag spurious-correlation candidates.
 
 ---
 
-## Phase 20 — TBD
+## Phase 20 — History · Calibration · Diff ✅ COMPLETE
+
+**Goal:** Open up the recorded explanation store for query, surface a
+quantitative trust signal (ECE), and let users diff two past analyses
+post-hoc.  Three composing endpoints: history is the foundation,
+calibration is one aggregation over it, diff is a two-record
+operation that reuses the lookup primitives.
+
+**Delivered:**
+- `miru/history.py` — `query_records()` (filters: method, model,
+  min_confidence, since; limit 1..200, offset ≥ 0; newest-first;
+  drains the recorder before scanning) and `compute_calibration()`
+  (ECE + per-bin reliability curve; skips records without fidelity;
+  clamps out-of-range values; validates n_bins ∈ 2..50; empty
+  population returns ece=0.0).
+- `miru/diff.py` — `diff_records(rec_a, rec_b, top_n)`: bilinear-
+  align grids, cosine similarity on raw vectors (sign + magnitude
+  preserved), L2 on min-max normalised grids, signed delta grid,
+  top-N changed cells, and a human-readable summary using a 3×3
+  spatial grid ("A focused more on the bottom-left; B shifted toward
+  the top-right").  Handles flat / degenerate grids without NaN.
+- `GET /explain/history` — paginated filtered listing; strips the
+  bulky `attention_grid` / `top_regions` per row (fetch full via
+  `/analysis/{id}/export?format=json`).
+- `GET /explain/calibration` — pulls up to `limit` recent records
+  filtered by method/model, keeps those with fidelity, returns ECE
+  + bins + echoed filters.
+- `POST /explain/diff` — body `{analysis_id_a, analysis_id_b, top_n}`;
+  400 on identical IDs, 404 on missing record.
+- 52 new tests: 22 in `tests/test_history.py`, 13 in
+  `tests/test_diff.py`, 17 in `api/test_history_diff_calibration.py`.
+
+**Ship gate:** 491 / 491 passing post-rebase onto main (after the
+parallel Phases 17/18/19 — cross-modal / annotation / analytics — also
+landed). 5 skipped. No regressions.
+
+**Note on numbering:** committed locally as "Phase 17" before
+rebase; renumbered to **Phase 20** here because main shipped Phases
+17 / 18 / 19 in parallel.  See CHANGELOG for the same renumbering.
+
+---
+
+## Phase 21 — TBD
 
 Open candidates (P2/P3 from the researched roadmap, plus deferred items):
+- Region-of-interest (ROI) targeted explanation — extend `/explain`
+  with an optional bbox so attribution is restricted to a region of
+  the image.
 - ~~Expert annotation alignment (P2)~~ ✅ shipped in Phase 18.
 - ~~Dataset-level saliency analytics (P2)~~ ✅ shipped in Phase 19.
+- ~~Cross-modal attention tracer (P2)~~ ✅ shipped in Phase 17.
 - Intra-modal + cross-modal joint attribution (informed by arXiv 2509.22415) —
   upgrade the attention extractor to sum intra-visual token interactions with
   the cross-modal signal for more faithful maps (Medium complexity).

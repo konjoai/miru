@@ -47,10 +47,12 @@ from miru.bench.comparison import compare_backends
 from miru.bench.runner import run_benchmark
 from miru.config import settings
 from miru.consensus import compute_consensus
+from miru.diff import diff_records
 from miru.eu_ai_act import generate_report as generate_eu_ai_act_report
 from miru.explain_cache import cache_key, get_cache, is_cache_enabled
 from miru.export import SUPPORTED_FORMATS, export_record
 from miru.fidelity import LOW_FIDELITY_THRESHOLD, deletion_test
+from miru.history import compute_calibration, query_records
 from miru.models import registry
 from miru.recorder import find_record_by_id, maybe_record
 from miru.visualization.overlay import decode_image_b64, generate_overlay
@@ -77,6 +79,8 @@ MAX_LIME_SAMPLES = 256
 MAX_LIME_SEGMENTS = 144
 MAX_OCCLUSION_GRID = 16
 MAX_BATCH_ITEMS = 32  # cap /explain/batch input — bounded compute, security boundary
+MAX_HISTORY_LIMIT = 200  # cap /explain/history page size — bounded I/O
+MAX_CALIBRATION_BINS = 50  # cap /explain/calibration bin count
 
 # One extractor instance — stateless, safe across requests.
 _EXTRACTOR = AttentionExtractor(resolution=settings.attention_resolution)
@@ -398,6 +402,99 @@ class CacheClearResponse(BaseModel):
 
     model_config = ConfigDict(frozen=True)
     cleared: int
+
+
+# ----- History + calibration + diff schemas ----------------------------------
+
+
+class HistoryItem(BaseModel):
+    """One row in :class:`HistoryResponse.items`."""
+
+    model_config = ConfigDict(frozen=True)
+    analysis_id: str
+    ts: str
+    question: str
+    image_sha256: str | None
+    backend: str
+    method: str
+    confidence: float
+    latency_ms: float
+    fidelity_score: float | None
+    cache_hit: bool
+
+
+class HistoryResponse(BaseModel):
+    """Paginated /explain/history payload."""
+
+    model_config = ConfigDict(frozen=True)
+    items: list[HistoryItem]
+    total: int
+    limit: int
+    offset: int
+
+
+class CalibrationBinModel(BaseModel):
+    """One bucket on the calibration curve."""
+
+    model_config = ConfigDict(frozen=True)
+    lo: float
+    hi: float
+    count: int
+    mean_confidence: float
+    mean_fidelity: float
+    gap: float
+
+
+class CalibrationResponse(BaseModel):
+    """Body of ``GET /explain/calibration``."""
+
+    model_config = ConfigDict(frozen=True)
+    n: int
+    n_bins: int
+    ece: float
+    mean_confidence: float
+    mean_fidelity: float
+    bins: list[CalibrationBinModel]
+    # Optional filter echo so the client can confirm what got aggregated.
+    filter_method: str | None = None
+    filter_model: str | None = None
+
+
+class DiffRequest(BaseModel):
+    """Body of ``POST /explain/diff``."""
+
+    model_config = ConfigDict(frozen=True)
+    analysis_id_a: str = Field(..., min_length=8, max_length=64)
+    analysis_id_b: str = Field(..., min_length=8, max_length=64)
+    top_n: int = Field(10, ge=1, le=64, description="Top changed cells to return.")
+
+
+class TopChangedRegionModel(BaseModel):
+    """One cell where attribution shifted most."""
+
+    model_config = ConfigDict(frozen=True)
+    row: int
+    col: int
+    value_a: float
+    value_b: float
+    delta: float
+
+
+class DiffResponse(BaseModel):
+    """Body of ``POST /explain/diff``."""
+
+    model_config = ConfigDict(frozen=True)
+    analysis_id_a: str
+    analysis_id_b: str
+    method_a: str
+    method_b: str
+    backend_a: str
+    backend_b: str
+    cosine_similarity: float
+    l2_distance: float
+    delta_grid: list[list[float]]
+    top_changed: list[TopChangedRegionModel]
+    summary: str
 
 
 # ---------------------------------------------------------------------------
@@ -1530,6 +1627,198 @@ def explain_cache_clear() -> CacheClearResponse:
     if cache is None:
         return CacheClearResponse(cleared=0)
     return CacheClearResponse(cleared=cache.clear())
+
+
+# ---------------------------------------------------------------------------
+# History + calibration + diff endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/explain/history", response_model=HistoryResponse)
+def explain_history(
+    limit: int = Query(
+        50, ge=1, le=MAX_HISTORY_LIMIT,
+        description=f"Page size, 1..{MAX_HISTORY_LIMIT}.",
+    ),
+    offset: int = Query(
+        0, ge=0,
+        description="Records to skip before the page starts.",
+    ),
+    method: str | None = Query(
+        None, description="Exact-match explanation method filter (attention / lime / gradcam / shap).",
+    ),
+    model: str | None = Query(
+        None, description="Exact-match backend name filter.",
+    ),
+    min_confidence: float | None = Query(
+        None, ge=0.0, le=1.0,
+        description="Lower bound on trace.confidence.",
+    ),
+    since: str | None = Query(
+        None,
+        description="ISO-8601 timestamp; records strictly older are excluded.",
+    ),
+) -> HistoryResponse:
+    """Paginated, filtered listing of past explanations, newest first.
+
+    Reads the recorder JSONL store. The ``attention_grid`` and
+    ``top_regions`` arrays are stripped from each row — fetch the full
+    payload via ``/analysis/{id}/export?format=json`` when needed.
+    """
+    try:
+        page = query_records(
+            method=method,
+            model=model,
+            min_confidence=min_confidence,
+            since=since,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return HistoryResponse(
+        items=[
+            HistoryItem(
+                analysis_id=item.analysis_id,
+                ts=item.ts,
+                question=item.question,
+                image_sha256=item.image_sha256,
+                backend=item.backend,
+                method=item.method,
+                confidence=item.confidence,
+                latency_ms=item.latency_ms,
+                fidelity_score=item.fidelity_score,
+                cache_hit=item.cache_hit,
+            )
+            for item in page.items
+        ],
+        total=page.total,
+        limit=page.limit,
+        offset=page.offset,
+    )
+
+
+@app.get("/explain/calibration", response_model=CalibrationResponse)
+def explain_calibration(
+    n_bins: int = Query(
+        10, ge=2, le=MAX_CALIBRATION_BINS,
+        description=f"Equal-width bins on [0, 1]. 2..{MAX_CALIBRATION_BINS}.",
+    ),
+    method: str | None = Query(
+        None, description="Restrict to one explanation method.",
+    ),
+    model: str | None = Query(
+        None, description="Restrict to one backend.",
+    ),
+    limit: int = Query(
+        100, ge=1, le=MAX_HISTORY_LIMIT,
+        description=(
+            "Maximum recent records to include in the curve. "
+            "Only records carrying a fidelity score count toward this cap."
+        ),
+    ),
+) -> CalibrationResponse:
+    """Expected Calibration Error + reliability curve from recorded fidelity.
+
+    Pulls the most recent ``limit`` records matching the filter,
+    keeps only those with a fidelity score (run ``/explain?fidelity=true``
+    to populate), bins by ``confidence`` into ``n_bins`` equal-width
+    buckets on ``[0, 1]``, and reports ECE = Σ (n_b/N) · |conf_b − fid_b|.
+
+    Empty population (no records with fidelity yet) returns ``ece=0.0``
+    and ``n=0`` rather than 404 — clients render an "insufficient data"
+    state.
+    """
+    # Pull a generous slice of history filtered by method/model, then
+    # let compute_calibration filter to records with fidelity.
+    try:
+        page = query_records(
+            method=method,
+            model=model,
+            limit=MAX_HISTORY_LIMIT,
+            offset=0,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Cap to ``limit`` records that actually carry a fidelity score.
+    candidates = [item for item in page.items if item.fidelity_score is not None][:limit]
+    result = compute_calibration(candidates, n_bins=n_bins)
+
+    return CalibrationResponse(
+        n=result.n,
+        n_bins=result.n_bins,
+        ece=result.ece,
+        mean_confidence=result.mean_confidence,
+        mean_fidelity=result.mean_fidelity,
+        bins=[
+            CalibrationBinModel(
+                lo=b.lo, hi=b.hi, count=b.count,
+                mean_confidence=b.mean_confidence,
+                mean_fidelity=b.mean_fidelity, gap=b.gap,
+            )
+            for b in result.bins
+        ],
+        filter_method=method,
+        filter_model=model,
+    )
+
+
+@app.post("/explain/diff", response_model=DiffResponse)
+def explain_diff(req: DiffRequest) -> DiffResponse:
+    """Diff two recorded explanations by their analysis_id.
+
+    Loads each record from the recorder store, aligns their
+    attention grids (bilinearly upsampling the smaller one), computes
+    cosine similarity / L2 distance / signed delta grid / top-N
+    changed cells, and ships a short human-readable summary of where
+    the attention shifted.
+
+    Returns 404 when either ID is missing from the store.
+    """
+    if req.analysis_id_a == req.analysis_id_b:
+        raise HTTPException(
+            status_code=400,
+            detail="analysis_id_a and analysis_id_b must differ.",
+        )
+    rec_a = find_record_by_id(req.analysis_id_a)
+    if rec_a is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"analysis_id '{req.analysis_id_a}' not found",
+        )
+    rec_b = find_record_by_id(req.analysis_id_b)
+    if rec_b is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"analysis_id '{req.analysis_id_b}' not found",
+        )
+
+    try:
+        result = diff_records(rec_a, rec_b, top_n=req.top_n)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return DiffResponse(
+        analysis_id_a=result.analysis_id_a,
+        analysis_id_b=result.analysis_id_b,
+        method_a=result.method_a,
+        method_b=result.method_b,
+        backend_a=result.backend_a,
+        backend_b=result.backend_b,
+        cosine_similarity=result.cosine_similarity,
+        l2_distance=result.l2_distance,
+        delta_grid=result.delta_grid,
+        top_changed=[
+            TopChangedRegionModel(
+                row=t.row, col=t.col,
+                value_a=t.value_a, value_b=t.value_b, delta=t.delta,
+            )
+            for t in result.top_changed
+        ],
+        summary=result.summary,
+    )
 
 
 __all__ = ["app"]
