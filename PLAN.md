@@ -2,7 +2,7 @@
 
 **Project:** Miru — Multimodal Reasoning Tracer  
 **Current version:** v1.10.0  
-**Status:** EU AI Act compliance harden (Phase 27), synergistic-faithfulness probe / F_syn (Phase 26), explanation alert rules (Phase 25), ROI-targeted explanation (Phase 24), 748 tests passing (5 skipped without MIRU_TEST_REAL_BACKENDS=1)
+**Status:** EU AI Act compliance harden (Phase 27), synergistic-faithfulness probe / F_syn (Phase 26), explanation alert rules (Phase 25), ROI-targeted explanation (Phase 24), integrated attention explainer (Phase 22), 748 tests passing (5 skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 
