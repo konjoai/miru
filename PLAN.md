@@ -1,8 +1,8 @@
 # PLAN.md — Miru Roadmap
 
 **Project:** Miru — Multimodal Reasoning Tracer  
-**Current version:** v1.5.0  
-**Status:** Scale-space attention ensemble (Phase 21), history · calibration · diff (Phase 20), 497 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
+**Current version:** v1.6.0  
+**Status:** Integrated attention explainer (Phase 22), scale-space ensemble (Phase 21), history · calibration · diff (Phase 20), 570 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 
