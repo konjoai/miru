@@ -42,6 +42,7 @@ from miru.dataset_analytics import analyse_dataset
 from miru.ensemble import AttentionEnsemble, DEFAULT_SCALES
 from miru import gradcam_explainer, lime_explainer
 from miru.cross_modal import CrossModalTracer
+from miru.integrated_attention import IntegratedAttention
 from miru.shap_explainer import SHAPConfig, SHAPExplainer
 from miru.attention.extractor import AttentionExtractor
 from miru.bench.comparison import compare_backends
@@ -71,7 +72,7 @@ DEFAULT_BENCH_SEED = 42
 DEFAULT_BENCH_SIZE = 64
 MAX_BENCH_SIZE = 128
 
-IMPLEMENTED_METHODS: tuple[str, ...] = ("attention", "lime", "gradcam", "shap")
+IMPLEMENTED_METHODS: tuple[str, ...] = ("attention", "lime", "gradcam", "shap", "integrated")
 ROADMAP_METHODS: tuple[str, ...] = ()
 
 # Bound the budgets on the perturbation-based methods so a public deploy
@@ -151,6 +152,8 @@ class ExplainRequest(BaseModel):
     occlusion_grid: int = Field(8, ge=2, le=MAX_OCCLUSION_GRID, description="GradCAM occlusion grid side.")
     shap_grid: int = Field(7, ge=2, le=16, description="SHAP tile grid side (shap_grid × shap_grid tiles).")
     shap_samples: int = Field(32, ge=2, le=MAX_LIME_SAMPLES, description="SHAP coalitions sampled per tile.")
+    n_steps: int = Field(20, ge=2, le=100, description="Integrated-attention interpolation steps.")
+    integrated_baseline: str = Field("black", description="Integrated-attention baseline: 'black' or 'mean'.")
 
 
 class TopRegion(BaseModel):
@@ -531,6 +534,13 @@ _METHOD_DESCRIPTIONS: dict[str, str] = {
         "SHAP-style tile-masking attribution (Lundberg & Lee 2017): "
         "estimates φᵢ ≈ E[f(x)|xᵢ present] − E[f(x)|xᵢ absent] by "
         "sampling random tile coalitions.  Pure-NumPy, no shap library."
+    ),
+    "integrated": (
+        "Integrated attention (Sundararajan et al. 2017 analogue): interpolates "
+        "from a baseline image to the actual image in n_steps steps, averages "
+        "the attention maps along the path, and min-max normalises the result. "
+        "Highlights regions whose attention rises most consistently as the image "
+        "is revealed. Backend-agnostic; no gradients required."
     ),
 }
 
@@ -1118,6 +1128,15 @@ def _run_method(method: str, backend, image_array: np.ndarray, req):
             norm, settings.attention_resolution, settings.attention_resolution
         )
         return baseline, saliency
+
+    if method == "integrated":
+        baseline = backend.infer(image_array, req.question)
+        n_steps = getattr(req, "n_steps", 20)
+        int_baseline = getattr(req, "integrated_baseline", "black")
+        result = IntegratedAttention(
+            n_steps=n_steps, baseline=int_baseline
+        ).explain(backend, image_array, req.question)
+        return baseline, result.integrated_grid
 
     raise HTTPException(status_code=400, detail=f"unsupported method: {method}")
 

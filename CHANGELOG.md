@@ -5,6 +5,43 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [Unreleased] — Phase 22: integrated attention explainer (v1.6.0)
+
+### Added
+
+#### `miru/integrated_attention.py` — path-integrated attention
+- `IntegratedAttention(n_steps, baseline, extractor)` — interpolates a baseline
+  image to the input in `n_steps` steps, runs `backend.infer()` at each
+  interpolation, averages the normalised attention grids, and min-max normalises
+  the result to `[0, 1]`.
+- `IntegratedAttentionResult` frozen dataclass: `integrated_grid`, `n_steps`,
+  `grid_h`, `grid_w`.
+- `baseline="black"` (zeros) and `baseline="mean"` (per-channel mean) supported.
+- `DEFAULT_N_STEPS=20`, `MIN_N_STEPS=2`, `MAX_N_STEPS=100` exported constants.
+- Per-step failures logged and skipped; all-fail fallback returns zero grid.
+
+#### `POST /explain` — `api/main.py`
+- `method="integrated"` now dispatched via `_run_method`.
+- `ExplainRequest` extended with `n_steps` (int, ge=2, le=100, default 20) and
+  `integrated_baseline` (str, default `"black"`).
+- `"integrated"` added to `IMPLEMENTED_METHODS` and `_METHOD_DESCRIPTIONS`.
+- `GET /methods` now lists `integrated` with status `implemented`.
+
+### Tests
+- `tests/test_integrated_attention.py` — 21 tests: unit (dtype, value range,
+  shape, n_steps reported, black/mean baselines, determinism, invalid params,
+  2-step minimum), API (200 happy path, response shape, overlay, mean baseline,
+  /methods listing, error contracts, health regression).
+
+### Changed
+- Version bumped to `1.6.0`.
+- `tests/test_api.py` health-version assertion updated to `1.6.0`.
+
+### Test results
+- 570 passed, 5 skipped (4 real-backend, 1 CLIP structural).
+
+---
+
 ## [Unreleased] — Phase 21: scale-space attention ensemble (v1.5.0)
 
 ### Added
