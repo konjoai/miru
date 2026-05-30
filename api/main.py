@@ -54,8 +54,11 @@ from miru.explain_cache import cache_key, get_cache, is_cache_enabled
 from miru.export import SUPPORTED_FORMATS, export_record
 from miru.fidelity import LOW_FIDELITY_THRESHOLD, deletion_test
 from miru.history import compute_calibration, query_records
+from miru.model_comparison import compare_models
 from miru.models import registry
+from miru.posthoc_consensus import build_consensus as build_posthoc_consensus
 from miru.recorder import find_record_by_id, maybe_record
+from miru.search import search_by_pattern
 from miru.visualization.overlay import decode_image_b64, generate_overlay
 
 logger = logging.getLogger(__name__)
@@ -82,6 +85,10 @@ MAX_OCCLUSION_GRID = 16
 MAX_BATCH_ITEMS = 32  # cap /explain/batch input — bounded compute, security boundary
 MAX_HISTORY_LIMIT = 200  # cap /explain/history page size — bounded I/O
 MAX_CALIBRATION_BINS = 50  # cap /explain/calibration bin count
+MAX_COMPARE_MODELS = 8  # cap /explain/models/compare argument list — bounded I/O
+MAX_POSTHOC_IDS = 16  # cap /explain/consensus/by_ids analysis_ids list
+MAX_SEARCH_TOP_K = 50  # cap /explain/search top_k
+MAX_SEARCH_SCAN = 2000  # cap /explain/search candidate-scan budget
 
 # One extractor instance — stateless, safe across requests.
 _EXTRACTOR = AttentionExtractor(resolution=settings.attention_resolution)
@@ -496,6 +503,140 @@ class DiffResponse(BaseModel):
     delta_grid: list[list[float]]
     top_changed: list[TopChangedRegionModel]
     summary: str
+
+
+# ----- Model-comparison schemas ----------------------------------------------
+
+
+class ModelStatsBlock(BaseModel):
+    """One model's row in :class:`ModelsCompareResponse.stats`."""
+
+    model_config = ConfigDict(frozen=True)
+    model: str
+    n_records: int
+    mean_confidence: float | None
+    mean_latency_ms: float | None
+    mean_fidelity: float | None
+    n_with_fidelity: int
+    ece: float | None
+    method_distribution: dict[str, int]
+
+
+class ModelsCompareResponse(BaseModel):
+    """Body of ``GET /explain/models/compare``."""
+
+    model_config = ConfigDict(frozen=True)
+    models: list[str]
+    stats: dict[str, ModelStatsBlock]
+    winner_by_confidence: str | None
+    winner_by_fidelity: str | None
+    winner_by_ece: str | None
+    filter_method: str | None = None
+    limit: int
+
+
+# ----- Post-hoc consensus schemas --------------------------------------------
+
+
+class PosthocConsensusRequest(BaseModel):
+    """Body of ``POST /explain/consensus/by_ids``."""
+
+    model_config = ConfigDict(frozen=True)
+    analysis_ids: list[str] = Field(
+        ..., min_length=2, max_length=MAX_POSTHOC_IDS,
+        description=f"Distinct analysis_ids to combine (2..{MAX_POSTHOC_IDS}).",
+    )
+    weighting: str = Field(
+        "fidelity",
+        description="One of: fidelity | confidence | uniform.",
+    )
+    top_k: int = Field(5, ge=1, le=64,
+                       description="Top consensus cells to return.")
+
+
+class PerRecordContributionModel(BaseModel):
+    """One slot in :class:`PosthocConsensusResponse.per_record`."""
+
+    model_config = ConfigDict(frozen=True)
+    analysis_id: str
+    method: str
+    backend: str
+    weight: float
+    agreement_score: float
+
+
+class TopConsensusRegionModel(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    row: int
+    col: int
+    score: float
+
+
+class PosthocConsensusResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    consensus_grid: list[list[float]]
+    per_record: list[PerRecordContributionModel]
+    top_regions: list[TopConsensusRegionModel]
+    weighting: str
+    n_records: int
+    grid_h: int
+    grid_w: int
+
+
+# ----- Search-by-pattern schemas --------------------------------------------
+
+
+class SearchRequest(BaseModel):
+    """Body of ``POST /explain/search``.
+
+    Exactly one of ``query_grid`` and ``query_analysis_id`` must be set.
+    """
+
+    model_config = ConfigDict(frozen=True)
+    query_grid: list[list[float]] | None = Field(
+        None, description="2-D float saliency map used as the query.",
+    )
+    query_analysis_id: str | None = Field(
+        None, description="Pull the query grid from this recorded analysis.",
+    )
+    method: str | None = Field(
+        None, description="Restrict candidates to this explanation method.",
+    )
+    model: str | None = Field(
+        None, description="Restrict candidates to this backend.",
+    )
+    top_k: int = Field(10, ge=1, le=MAX_SEARCH_TOP_K)
+    min_similarity: float | None = Field(
+        None, ge=-1.0, le=1.0,
+        description="Drop matches with cosine below this value.",
+    )
+    max_scan: int = Field(
+        500, ge=1, le=MAX_SEARCH_SCAN,
+        description="Maximum candidates to score before slicing.",
+    )
+
+
+class SearchMatchModel(BaseModel):
+    """One match row."""
+
+    model_config = ConfigDict(frozen=True)
+    analysis_id: str
+    ts: str
+    method: str
+    backend: str
+    question: str
+    similarity: float
+
+
+class SearchResponse(BaseModel):
+    """Body of ``POST /explain/search``."""
+
+    model_config = ConfigDict(frozen=True)
+    matches: list[SearchMatchModel]
+    n_candidates: int
+    n_scanned: int
+    top_k: int
+    query_analysis_id: str | None
 
 
 # ---------------------------------------------------------------------------
@@ -1945,6 +2086,195 @@ def explain_diff(req: DiffRequest) -> DiffResponse:
             for t in result.top_changed
         ],
         summary=result.summary,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Model-comparison / post-hoc consensus / search endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/explain/models/compare", response_model=ModelsCompareResponse)
+def explain_models_compare(
+    models: str = Query(
+        ...,
+        description=(
+            "Comma-separated list of model names to compare "
+            f"(1..{MAX_COMPARE_MODELS}). Distinct."
+        ),
+        examples=["mock", "mock,clip"],
+    ),
+    limit: int = Query(
+        50, ge=1, le=MAX_HISTORY_LIMIT,
+        description=f"Per-model record cap, 1..{MAX_HISTORY_LIMIT}.",
+    ),
+    method: str | None = Query(
+        None,
+        description="Optional explanation-method filter applied to every model.",
+    ),
+) -> ModelsCompareResponse:
+    """Aggregate per-model stats over recorded history.
+
+    Returns count / mean confidence / mean latency / mean fidelity /
+    ECE / method distribution for each requested model, plus three
+    winner verdicts (by confidence, fidelity, ECE).  Each metric's
+    winner is ``None`` when no model has data for it.
+    """
+    parsed = [m.strip() for m in models.split(",") if m.strip()]
+    if not parsed:
+        raise HTTPException(
+            status_code=400,
+            detail="models must contain at least one non-empty name",
+        )
+    if len(parsed) > MAX_COMPARE_MODELS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"too many models; max {MAX_COMPARE_MODELS}, got {len(parsed)}",
+        )
+
+    try:
+        result = compare_models(parsed, limit=limit, method=method)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return ModelsCompareResponse(
+        models=result.models,
+        stats={
+            name: ModelStatsBlock(
+                model=st.model,
+                n_records=st.n_records,
+                mean_confidence=st.mean_confidence,
+                mean_latency_ms=st.mean_latency_ms,
+                mean_fidelity=st.mean_fidelity,
+                n_with_fidelity=st.n_with_fidelity,
+                ece=st.ece,
+                method_distribution=st.method_distribution,
+            )
+            for name, st in result.stats.items()
+        },
+        winner_by_confidence=result.winner_by_confidence,
+        winner_by_fidelity=result.winner_by_fidelity,
+        winner_by_ece=result.winner_by_ece,
+        filter_method=result.filter_method,
+        limit=result.limit,
+    )
+
+
+@app.post("/explain/consensus/by_ids", response_model=PosthocConsensusResponse)
+def explain_consensus_by_ids(
+    req: PosthocConsensusRequest,
+) -> PosthocConsensusResponse:
+    """Build a weighted-average consensus from existing analysis records.
+
+    Loads every ID in ``analysis_ids`` from the recorder store and
+    combines their attention grids via fidelity-, confidence-, or
+    uniform-weighted averaging.  Each contributing record receives
+    an ``agreement_score`` ∈ [-1, 1] (cosine between its grid and the
+    consensus).
+
+    Distinct from :func:`explain_consensus` (``POST /explain/consensus``)
+    which takes a fresh image plus a list of methods and runs every
+    method live.  This one combines analyses that have already run.
+
+    Returns 400 on duplicate IDs / bad weighting, 404 on a missing
+    record.
+    """
+    if len(set(req.analysis_ids)) != len(req.analysis_ids):
+        raise HTTPException(
+            status_code=400,
+            detail="analysis_ids must be distinct",
+        )
+
+    records: list[dict] = []
+    for aid in req.analysis_ids:
+        rec = find_record_by_id(aid)
+        if rec is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"analysis_id '{aid}' not found",
+            )
+        records.append(rec)
+
+    try:
+        result = build_posthoc_consensus(
+            records, weighting=req.weighting, top_k=req.top_k,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return PosthocConsensusResponse(
+        consensus_grid=result.consensus_grid,
+        per_record=[
+            PerRecordContributionModel(
+                analysis_id=p.analysis_id,
+                method=p.method,
+                backend=p.backend,
+                weight=p.weight,
+                agreement_score=p.agreement_score,
+            )
+            for p in result.per_record
+        ],
+        top_regions=[
+            TopConsensusRegionModel(row=t.row, col=t.col, score=t.score)
+            for t in result.top_regions
+        ],
+        weighting=result.weighting,
+        n_records=result.n_records,
+        grid_h=result.grid_h,
+        grid_w=result.grid_w,
+    )
+
+
+@app.post("/explain/search", response_model=SearchResponse)
+def explain_search(req: SearchRequest) -> SearchResponse:
+    """Find recorded explanations similar to the query attribution grid.
+
+    Two query modes:
+
+    - Supply ``query_grid`` directly — a 2-D float saliency map.
+    - Supply ``query_analysis_id`` — its stored grid becomes the query
+      and that same record is excluded from the result set.
+
+    Filters: ``method`` and ``model``. Optional ``min_similarity``
+    cutoff. Bilinearly aligns candidate grids to the query's shape so
+    differently-resolved methods can be compared.
+
+    Returns 400 on bad arguments; 404 on missing query_analysis_id.
+    """
+    try:
+        result = search_by_pattern(
+            query_grid=req.query_grid,
+            query_analysis_id=req.query_analysis_id,
+            method=req.method,
+            model=req.model,
+            top_k=req.top_k,
+            min_similarity=req.min_similarity,
+            max_scan=req.max_scan,
+        )
+    except ValueError as exc:
+        # Disambiguate "not found" from other validation errors so
+        # clients can return 404 to their own users.
+        message = str(exc)
+        if "not found in store" in message:
+            raise HTTPException(status_code=404, detail=message) from exc
+        raise HTTPException(status_code=400, detail=message) from exc
+
+    return SearchResponse(
+        matches=[
+            SearchMatchModel(
+                analysis_id=m.analysis_id,
+                ts=m.ts,
+                method=m.method,
+                backend=m.backend,
+                question=m.question,
+                similarity=m.similarity,
+            )
+            for m in result.matches
+        ],
+        n_candidates=result.n_candidates,
+        n_scanned=result.n_scanned,
+        top_k=result.top_k,
+        query_analysis_id=result.query_analysis_id,
     )
 
 

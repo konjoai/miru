@@ -5,6 +5,84 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [Unreleased] — Phase 22: model comparison · post-hoc consensus · search
+
+### Added
+
+#### `miru/model_comparison.py` — per-model aggregation
+- `compare_models(models, *, limit, method)` pulls per-model
+  history slices and computes `n_records`, `mean_confidence`,
+  `mean_latency_ms`, `mean_fidelity`, `n_with_fidelity`, `ece` (via
+  `compute_calibration`), and `method_distribution` for each model.
+- Three winner verdicts: by mean confidence (higher wins), by mean
+  fidelity (higher wins), by ECE (lower wins). Each winner is
+  `None` when no model has data for that metric. Ties resolve in
+  input order.
+- Validates: non-empty / distinct `models`; `limit ∈ 1..200`.
+
+#### `miru/posthoc_consensus.py` — weighted consensus from analysis_ids
+- `build_consensus(records, *, weighting, top_k)` aligns all
+  attention grids (bilinear-upsample to the max shape) and computes
+  a weighted average. Three weighting modes:
+  - `fidelity` (default): per-record weight = `fidelity_score`;
+    records without fidelity get the population floor; all-missing
+    falls back to uniform.
+  - `confidence`: per-record weight = `confidence`; all-zero falls
+    back to uniform.
+  - `uniform`: every record gets weight 1.0.
+- Each contributing record receives an `agreement_score ∈ [-1, 1]`
+  (cosine between its grid and the consensus).
+- Distinct from `miru/consensus.py` (Phase 13) which runs methods
+  live; this combines records that already ran.
+
+#### `miru/search.py` — pattern search over history
+- `search_by_pattern(*, query_grid | query_analysis_id, method,
+  model, top_k, min_similarity, max_scan)` finds historical
+  analyses by cosine similarity of their attention grids.
+- Bilinearly aligns candidate grids to the query's shape, so
+  methods producing different resolutions are still comparable.
+- Self-exclusion when querying by `analysis_id`. Malformed candidate
+  records (no grid) are silently skipped.
+- Exact (no embedding index) — fine at audit-log scale; swap in
+  faiss/hnswlib behind the same interface when corpus grows.
+
+#### `GET /explain/models/compare`
+- Query: `models` (comma-separated, distinct, ≤ 8), `limit ≤ 200`,
+  optional `method` filter.
+- Returns per-model `ModelStatsBlock` + three winner verdicts + the
+  echoed `filter_method` and `limit`.
+
+#### `POST /explain/consensus/by_ids`
+- Body: `{analysis_ids[2..16], weighting, top_k}`.
+- Returns the consensus grid, per-record contributions (weight +
+  agreement_score), top-K consensus regions, echoed weighting,
+  grid dimensions.
+- 400 on duplicate IDs / bad weighting; 404 on missing record.
+
+#### `POST /explain/search`
+- Body: either `query_grid` or `query_analysis_id` (exclusive),
+  optional `method` / `model` filters, `top_k ≤ 50`,
+  `min_similarity ∈ [-1, 1]`, `max_scan ≤ 2000`.
+- Returns `SearchMatch[]` (analysis_id, ts, method, backend,
+  question, similarity), `n_candidates`, `n_scanned`, echoed
+  `top_k`, echoed `query_analysis_id`.
+- 400 on bad arguments; 404 on missing `query_analysis_id`.
+
+### Tests
+- `tests/test_model_comparison.py` — 12 unit tests
+- `tests/test_posthoc_consensus.py` — 16 unit tests
+- `tests/test_search.py` — 18 unit tests
+- `api/test_phase22_endpoints.py` — 20 HTTP tests
+- Full suite: **615 / 615 passing** (549 baseline → +66); 5 skipped.
+
+### Notes
+- All three endpoints are read-side: they never invoke a backend or
+  write a record. They compose around the recorded explanation
+  store opened up by Phase 20's `query_records()` /
+  `find_record_by_id()`.
+
+---
+
 ## [Unreleased] — Phase 21: scale-space attention ensemble (v1.5.0)
 
 ### Added

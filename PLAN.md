@@ -2,7 +2,7 @@
 
 **Project:** Miru — Multimodal Reasoning Tracer  
 **Current version:** v1.5.0  
-**Status:** Scale-space attention ensemble (Phase 21), history · calibration · diff (Phase 20), 497 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
+**Status:** Model comparison · post-hoc consensus · search (Phase 22), scale-space ensemble (Phase 21), history · calibration · diff (Phase 20), 615 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 
@@ -615,12 +615,100 @@ single-scale cross-attention captures only 52–75% of the true saliency signal
 
 ---
 
-## Phase 22 — TBD
+## Phase 22 — Model Comparison · Post-hoc Consensus · Search ✅ COMPLETE
+
+**Goal:** Three composing read-side endpoints that operate on the
+recorded explanation store opened up by Phase 20. Model comparison
+aggregates across models; post-hoc consensus combines existing
+analyses without rerunning; search finds historical analyses with
+similar attribution patterns.
+
+**Delivered:**
+
+- `miru/model_comparison.py` — `compare_models(models, *, limit, method)`
+  pulls per-model history slices and aggregates `n_records`,
+  `mean_confidence`, `mean_latency_ms`, `mean_fidelity`,
+  `n_with_fidelity`, `ece` (via `compute_calibration`), and
+  `method_distribution`.  Reports three winner verdicts: by mean
+  confidence (higher wins), by mean fidelity (higher wins), by ECE
+  (lower wins).  Each winner is `None` when no model has data for
+  that metric.
+
+- `miru/posthoc_consensus.py` — `build_consensus(records, *, weighting, top_k)`
+  takes already-recorded dicts (typically obtained via
+  `find_record_by_id` per ID), bilinearly aligns all attention
+  grids to the max shape, computes a weighted average and a
+  per-record `agreement_score` (cosine vs. the consensus). Three
+  weighting modes: `fidelity` (default; missing fidelity → floor at
+  population min; all-missing falls back to uniform), `confidence`,
+  `uniform`. Distinct from `miru.consensus.compute_consensus`
+  (Phase 13) which takes a fresh image + methods and runs them
+  live; this combines records that already ran.
+
+- `miru/search.py` — `search_by_pattern(query_grid | query_analysis_id,
+  *, method, model, top_k, min_similarity, max_scan)`. Exact cosine
+  search over the recorded JSONL store, newest first within the
+  scan budget. Bilinearly aligns candidate grids to the query's
+  shape so methods that produce different resolutions can be
+  compared. Self-exclusion when querying by `analysis_id`.
+
+- `api/main.py` — three new endpoints:
+  - `GET /explain/models/compare?models=A,B&limit=50&method=...`
+  - `POST /explain/consensus/by_ids` — body
+    `{analysis_ids[2..16], weighting, top_k}`
+  - `POST /explain/search` — body
+    `{query_grid | query_analysis_id, method, model, top_k,
+    min_similarity, max_scan}`
+
+- New boundary constants in `api/main.py`: `MAX_COMPARE_MODELS=8`,
+  `MAX_POSTHOC_IDS=16`, `MAX_SEARCH_TOP_K=50`, `MAX_SEARCH_SCAN=2000`.
+
+**Tests:**
+- `tests/test_model_comparison.py` — 12 unit tests: argument
+  validation (empty / duplicate / invalid limit), empty store,
+  single-model aggregate, fidelity/ECE round-trip, method
+  distribution, multi-model winners by confidence and ECE, method
+  filter, limit cap, no-data winners.
+- `tests/test_posthoc_consensus.py` — 16 unit tests: argument
+  validation (empty / unknown weighting / invalid top_k / missing
+  grid / empty grid), math correctness (uniform = simple mean,
+  identical = unit agreement, outlier has lower agreement),
+  weighting modes (fidelity dominance, fallback to uniform, floor
+  for missing, confidence dominance, zero-confidence fallback),
+  shape alignment, top-region ordering, metadata round-trip.
+- `tests/test_search.py` — 18 unit tests: argument validation
+  (neither / both queries / invalid top_k / max_scan /
+  min_similarity / unknown query_analysis_id), basic behaviour
+  (empty source, exact match, sort order, self-exclusion), filters
+  (method, model, min_similarity, top_k cap), shape alignment,
+  candidate-without-grid skip, max_scan cap, metadata round-trip.
+- `api/test_phase22_endpoints.py` — 20 HTTP tests covering every
+  endpoint × every error contract.
+
+**End-to-end verified** through `demo/server.py`:
+- `GET /api/v2/explain/models/compare?models=mock&limit=10` →
+  aggregate stats + winners across confidence, fidelity, ECE
+- `POST /api/v2/explain/consensus/by_ids` → 16x16 consensus grid,
+  per-record agreement scores, top-K consensus regions
+- `POST /api/v2/explain/search` correctly excludes the query
+  analysis_id from results, scores by cosine similarity
+
+**Ship gate:** **615 / 615 passing** post-rebase (549 baseline → +66
+new); 5 skipped.  No regressions.
+
+---
+
+## Phase 23 — TBD
 
 Open candidates (P2/P3 from the researched roadmap, plus deferred items):
 - Region-of-interest (ROI) targeted explanation — extend `/explain`
   with an optional bbox so attribution is restricted to a region of
   the image.
+- Explanation alerts / anomaly detection — webhook-firing rules
+  matched against `/explain` output (SQLite-backed rule store).
+- Input sensitivity analysis — `POST /explain/sensitivity` measures
+  attribution drift under Gaussian perturbation; returns stability
+  score + worst-case perturbation.
 - ~~Expert annotation alignment (P2)~~ ✅ shipped in Phase 18.
 - ~~Dataset-level saliency analytics (P2)~~ ✅ shipped in Phase 19.
 - ~~Cross-modal attention tracer (P2)~~ ✅ shipped in Phase 17.
