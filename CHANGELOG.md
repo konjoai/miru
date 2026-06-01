@@ -5,6 +5,57 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [1.6.0] — Phase 23: input sensitivity / robustness
+
+### Added
+
+#### `miru/sensitivity.py` — explainer-agnostic robustness probe
+- `compute_sensitivity(saliency_fn, image, *, baseline_grid, baseline_answer,
+  sigmas, n_trials, seed, stability_threshold)` — sweeps seeded Gaussian noise
+  at each σ, re-runs `saliency_fn` `n_trials` times per σ, and measures mean
+  absolute attribution drift of the normalised saliency from the clean
+  baseline. Returns `SensitivityResult`: `stability_score = 1 − mean_drift`
+  (clamped to `[0, 1]`), `worst_sigma`, `worst_drift`, `is_stable`, and
+  per-σ `PerturbationResult`s.
+- Method-agnostic by design — it takes a `saliency_fn` (image → 2-D grid), so
+  it covers `attention` / `lime` / `gradcam` / `shap` uniformly.
+- `baseline_grid` short-circuit lets callers pass the clean-image saliency they
+  already computed, avoiding a redundant (and for LIME/SHAP, expensive)
+  explainer run.
+- `attribution_drift(a, b)` — mean absolute per-cell difference; raises on a
+  shape mismatch. Fully deterministic under `seed` (cf. Ghorbani et al. 2019,
+  "Interpretation of Neural Networks Is Fragile").
+
+#### `POST /explain/sensitivity` (`api/main.py`)
+- `SensitivityRequest` carries the same explainer knobs as `/explain` plus
+  `sigmas` (≤ 8, each in (0, 1]), `n_trials` (≤ 8 — bounds `backend.infer`
+  fan-out), `seed`, `stability_threshold`.
+- Drives all four methods through the existing `_run_method` dispatch, so the
+  robustness measured is exactly the map `/explain` would return.
+- `SensitivityResponse`: `model_name`, `method`, `baseline_answer`,
+  `stability_score`, `is_stable`, `worst_sigma`, `worst_drift`, `per_sigma[]`,
+  `latency_ms`.
+- 400 on out-of-range / empty / oversized `sigmas`, unknown method, unknown
+  model, or an undecodable image.
+
+#### Tests
+- `tests/test_sensitivity.py` (12 unit) + `api/test_sensitivity.py` (12 HTTP) —
+  24 new tests.
+
+### Changed
+- Version bumped to `1.6.0`. `tests/test_api.py` health-version assertion → `1.6.0`.
+- `miru/__init__.py` exports `compute_sensitivity` and `SensitivityResult`.
+
+### Notes
+- 639 / 639 passing (24 new, 615 existing); 5 skipped.
+- **Scope discipline:** the exploratory build of this feature also reintroduced
+  a history store, model comparison, and pattern search — all of which already
+  shipped in Phases 20 and 22 (`miru/history.py`, `miru/model_comparison.py`,
+  `miru/search.py`). Those duplicates were dropped; only the novel robustness
+  probe was kept and wired into the existing explainer dispatch.
+
+---
+
 ## [Unreleased] — Phase 22: model comparison · post-hoc consensus · search
 
 ### Added

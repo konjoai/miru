@@ -1,8 +1,8 @@
 # PLAN.md — Miru Roadmap
 
 **Project:** Miru — Multimodal Reasoning Tracer  
-**Current version:** v1.5.0  
-**Status:** Model comparison · post-hoc consensus · search (Phase 22), scale-space ensemble (Phase 21), history · calibration · diff (Phase 20), 615 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
+**Current version:** v1.6.0  
+**Status:** Input sensitivity / robustness (Phase 23), model comparison · post-hoc consensus · search (Phase 22), scale-space ensemble (Phase 21), history · calibration · diff (Phase 20), 639 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 
@@ -698,7 +698,48 @@ new); 5 skipped.  No regressions.
 
 ---
 
-## Phase 23 — TBD
+## Phase 23 — Input Sensitivity / Robustness (v1.6.0) ✅ COMPLETE
+
+**Goal:** Quantify whether an explanation is *trustworthy* — does it stay put
+when the input barely moves? Fragile saliency that relocates under
+imperceptible Gaussian noise is tracking noise, not signal (Ghorbani et al.
+2019). This phase adds a method-agnostic robustness probe.
+
+**Delivered:**
+- `miru/sensitivity.py` — pure-NumPy, explainer-agnostic. `compute_sensitivity`
+  takes a `saliency_fn` (image → 2-D grid) so it works uniformly across every
+  method (`attention`/`lime`/`gradcam`/`shap`). Sweeps seeded Gaussian noise at
+  each σ, re-runs the explainer `n_trials` times per σ, measures mean absolute
+  attribution drift, and returns `stability_score = 1 − mean_drift`, the worst
+  σ, and an `is_stable` verdict. `baseline_grid` short-circuit avoids a
+  redundant (potentially expensive) clean-image explainer run. Fully
+  deterministic under a seed.
+- `POST /explain/sensitivity` (`api/main.py`) — `SensitivityRequest` carries the
+  same explainer knobs as `/explain` plus `sigmas` (≤ 8, each in (0, 1]),
+  `n_trials` (≤ 8, bounds backend.infer fan-out), `seed`, `stability_threshold`.
+  Drives all four methods via the existing `_run_method` so the robustness
+  measured is exactly the map the API would return. 400 on bad sigma / unknown
+  method / unknown model / undecodable image.
+- 24 new tests: `tests/test_sensitivity.py` (12 unit — drift math, blind-vs-
+  image-dependent saliency, determinism, threshold, baseline short-circuit) +
+  `api/test_sensitivity.py` (12 HTTP — contract, per-σ fields, mock-attention
+  stability, determinism, gradcam path, all validation rejections).
+
+**Design notes / pushback:** the standalone exploratory version of this feature
+also reintroduced a history store, model-comparison, and pattern-search — but
+those already shipped in Phases 20/22 (`miru/history.py`,
+`miru/model_comparison.py`, `miru/search.py`). Per "don't re-implement
+anything," those were dropped and only the genuinely-novel robustness probe was
+kept, integrated into the existing `_run_method` dispatch rather than a parallel
+explainer path.
+
+**Ship gate:** 639/639 tests pass (24 new, 615 existing); 5 skipped (4
+real-backend + 1 other). `miru/sensitivity.py` clean on ruff/radon(A)/vulture
+and 150 lines.
+
+---
+
+## Phase 24 — TBD
 
 Open candidates (P2/P3 from the researched roadmap, plus deferred items):
 - Region-of-interest (ROI) targeted explanation — extend `/explain`
@@ -706,9 +747,7 @@ Open candidates (P2/P3 from the researched roadmap, plus deferred items):
   the image.
 - Explanation alerts / anomaly detection — webhook-firing rules
   matched against `/explain` output (SQLite-backed rule store).
-- Input sensitivity analysis — `POST /explain/sensitivity` measures
-  attribution drift under Gaussian perturbation; returns stability
-  score + worst-case perturbation.
+- ~~Input sensitivity analysis~~ ✅ shipped in Phase 23.
 - ~~Expert annotation alignment (P2)~~ ✅ shipped in Phase 18.
 - ~~Dataset-level saliency analytics (P2)~~ ✅ shipped in Phase 19.
 - ~~Cross-modal attention tracer (P2)~~ ✅ shipped in Phase 17.

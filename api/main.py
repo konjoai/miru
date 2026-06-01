@@ -59,6 +59,7 @@ from miru.models import registry
 from miru.posthoc_consensus import build_consensus as build_posthoc_consensus
 from miru.recorder import find_record_by_id, maybe_record
 from miru.search import search_by_pattern
+from miru.sensitivity import DEFAULT_SIGMAS, compute_sensitivity
 from miru.visualization.overlay import decode_image_b64, generate_overlay
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,8 @@ MAX_COMPARE_MODELS = 8  # cap /explain/models/compare argument list — bounded 
 MAX_POSTHOC_IDS = 16  # cap /explain/consensus/by_ids analysis_ids list
 MAX_SEARCH_TOP_K = 50  # cap /explain/search top_k
 MAX_SEARCH_SCAN = 2000  # cap /explain/search candidate-scan budget
+MAX_SENSITIVITY_SIGMAS = 8  # cap /explain/sensitivity noise-level sweep
+MAX_SENSITIVITY_TRIALS = 8  # cap perturbations per σ — bounds backend.infer() fan-out
 
 # One extractor instance — stateless, safe across requests.
 _EXTRACTOR = AttentionExtractor(resolution=settings.attention_resolution)
@@ -1437,6 +1440,122 @@ def explain_ensemble(req: EnsembleRequest) -> EnsembleResponse:
         ],
         top_regions=[TopRegion(row=r, col=c, score=sc) for r, c, sc in top],
         overlay_b64=overlay_b64,
+        latency_ms=latency_ms,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Input-sensitivity (robustness) endpoint
+# ---------------------------------------------------------------------------
+
+
+class SensitivityRequest(BaseModel):
+    """Request body for ``POST /explain/sensitivity``.
+
+    Carries the same explainer knobs as :class:`ExplainRequest` (so every
+    method can be probed) plus the perturbation-sweep controls.
+    """
+
+    model_config = ConfigDict(frozen=True)
+    image_b64: str = Field(..., description="Base64-encoded source image (PNG/JPEG).")
+    model_name: str = Field("mock", description="Registered backend name (see /methods).")
+    method: str = Field("attention", description=f"Explanation method. Implemented: {IMPLEMENTED_METHODS}.")
+    question: str = Field("Where is the salient region?", description="Prompt to condition the backend.")
+    n_samples: int = Field(64, ge=2, le=MAX_LIME_SAMPLES, description="LIME perturbation count.")
+    n_segments: int = Field(36, ge=4, le=MAX_LIME_SEGMENTS, description="LIME superpixel count.")
+    occlusion_grid: int = Field(8, ge=2, le=MAX_OCCLUSION_GRID, description="GradCAM occlusion grid side.")
+    shap_grid: int = Field(7, ge=2, le=16, description="SHAP tile grid side.")
+    shap_samples: int = Field(32, ge=2, le=MAX_LIME_SAMPLES, description="SHAP coalitions per tile.")
+    sigmas: list[float] = Field(default_factory=lambda: list(DEFAULT_SIGMAS), description="Gaussian noise standard deviations to sweep, each in (0, 1].")
+    n_trials: int = Field(3, ge=1, le=MAX_SENSITIVITY_TRIALS, description="Perturbed samples averaged per σ.")
+    seed: int = Field(0, ge=0, description="RNG seed — identical inputs give identical results.")
+    stability_threshold: float = Field(0.85, ge=0.0, le=1.0, description="stability_score at/above which is_stable is true.")
+
+
+class PerturbationStat(BaseModel):
+    """Drift at one noise level in a sensitivity sweep."""
+
+    model_config = ConfigDict(frozen=True)
+    sigma: float
+    mean_drift: float
+    max_drift: float
+
+
+class SensitivityResponse(BaseModel):
+    """Response body for ``POST /explain/sensitivity``."""
+
+    model_config = ConfigDict(frozen=True)
+    model_name: str
+    method: str
+    baseline_answer: str
+    stability_score: float
+    is_stable: bool
+    worst_sigma: float
+    worst_drift: float
+    per_sigma: list[PerturbationStat]
+    latency_ms: float
+
+
+def _validate_sigmas(sigmas: list[float]) -> tuple[float, ...]:
+    """Validate the noise-level sweep; raise HTTP 400 on a bad list."""
+    if not sigmas:
+        raise HTTPException(status_code=400, detail="sigmas must not be empty.")
+    if len(sigmas) > MAX_SENSITIVITY_SIGMAS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"at most {MAX_SENSITIVITY_SIGMAS} sigma levels allowed; got {len(sigmas)}.",
+        )
+    for s in sigmas:
+        if not (0.0 < s <= 1.0):
+            raise HTTPException(status_code=400, detail=f"each sigma must be in (0, 1]; got {s}.")
+    return tuple(sigmas)
+
+
+@app.post("/explain/sensitivity", response_model=SensitivityResponse)
+def explain_sensitivity(req: SensitivityRequest) -> SensitivityResponse:
+    """Measure how much an explanation drifts under small input perturbations.
+
+    Sweeps seeded Gaussian noise at each requested σ, re-runs the chosen
+    explainer ``n_trials`` times per σ, and reports per-σ attribution drift
+    plus an aggregate stability verdict. Works for every implemented method;
+    see :mod:`miru.sensitivity` for the methodology.
+    """
+    _validate_method(req.method)
+    sigmas = _validate_sigmas(req.sigmas)
+    backend = _get_backend_or_400(req.model_name)
+    image_array = _decode_to_float_array(req.image_b64)
+
+    t0 = time.perf_counter()
+    baseline_out, baseline_grid = _run_method(req.method, backend, image_array, req)
+
+    def saliency_fn(arr: np.ndarray) -> np.ndarray:
+        _, grid = _run_method(req.method, backend, arr, req)
+        return grid
+
+    result = compute_sensitivity(
+        saliency_fn,
+        image_array,
+        baseline_grid=baseline_grid,
+        baseline_answer=baseline_out.answer,
+        sigmas=sigmas,
+        n_trials=req.n_trials,
+        seed=req.seed,
+        stability_threshold=req.stability_threshold,
+    )
+    latency_ms = (time.perf_counter() - t0) * 1_000.0
+
+    return SensitivityResponse(
+        model_name=backend.name,
+        method=req.method,
+        baseline_answer=result.baseline_answer,
+        stability_score=result.stability_score,
+        is_stable=result.is_stable,
+        worst_sigma=result.worst_sigma,
+        worst_drift=result.worst_drift,
+        per_sigma=[
+            PerturbationStat(sigma=p.sigma, mean_drift=p.mean_drift, max_drift=p.max_drift)
+            for p in result.per_sigma
+        ],
         latency_ms=latency_ms,
     )
 
