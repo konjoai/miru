@@ -1,8 +1,8 @@
 # PLAN.md — Miru Roadmap
 
 **Project:** Miru — Multimodal Reasoning Tracer  
-**Current version:** v1.6.0  
-**Status:** Input sensitivity / robustness (Phase 23), model comparison · post-hoc consensus · search (Phase 22), scale-space ensemble (Phase 21), history · calibration · diff (Phase 20), 639 tests passing (4 real-backend tests skipped without MIRU_TEST_REAL_BACKENDS=1)
+**Current version:** v1.7.0  
+**Status:** ROI-targeted explanation (Phase 24), input sensitivity / robustness (Phase 23), model comparison · post-hoc consensus · search (Phase 22), 657 tests passing (5 skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 
@@ -739,14 +739,38 @@ and 150 lines.
 
 ---
 
-## Phase 24 — TBD
+## Phase 24 — ROI-targeted explanation (v1.7.0) ✅ COMPLETE
+
+**Goal:** Let callers restrict saliency computation to a user-defined
+sub-region of the image, confining attribution to the area of interest.
+
+**Delivered:**
+- `BoundingBox` Pydantic model in `api/main.py` — relative `[0, 1]`
+  coordinates with cross-field `model_validator` enforcing `x2 > x1`
+  and `y2 > y1`.
+- `roi: BoundingBox | None = None` field on `ExplainRequest` (backward-
+  compatible; defaults to `None`).
+- `_apply_roi_saliency(full_image, roi, method, backend, req)` — crops
+  the image to the bbox, runs the chosen explainer on the crop, resizes
+  the resulting grid into the corresponding cells of a full-resolution
+  zero grid.  The VLM answer/confidence always come from the full image.
+  Works for all four methods (attention, lime, gradcam, shap).  Raises
+  HTTP 400 when the crop maps below 4×4 pixels.
+- `roi` included in `_explain_cache_key` so different sub-regions never
+  collide.
+- `api/test_roi.py` — 13 HTTP tests; `tests/test_roi.py` — 6 unit tests
+  for `BoundingBox` validation.
+
+**Ship gate:** 657/657 tests pass (+19 new); ruff clean.
+
+---
+
+## Phase 25 — TBD
 
 Open candidates (P2/P3 from the researched roadmap, plus deferred items):
-- Region-of-interest (ROI) targeted explanation — extend `/explain`
-  with an optional bbox so attribution is restricted to a region of
-  the image.
 - Explanation alerts / anomaly detection — webhook-firing rules
   matched against `/explain` output (SQLite-backed rule store).
+- ~~Region-of-interest (ROI) targeted explanation~~ ✅ shipped in Phase 24.
 - ~~Input sensitivity analysis~~ ✅ shipped in Phase 23.
 - ~~Expert annotation alignment (P2)~~ ✅ shipped in Phase 18.
 - ~~Dataset-level saliency analytics (P2)~~ ✅ shipped in Phase 19.

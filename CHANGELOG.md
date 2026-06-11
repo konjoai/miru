@@ -5,6 +5,32 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [1.7.0] — Phase 24: ROI-targeted explanation
+
+### Added
+
+#### `BoundingBox` model (`api/main.py`)
+- New Pydantic model with relative `[0, 1]` coordinates (`x1`, `y1`, `x2`, `y2`).
+  A `model_validator` enforces `x2 > x1` and `y2 > y1` at construction time.
+
+#### `roi` field on `ExplainRequest`
+- Optional `roi: BoundingBox | None = None` added to `POST /explain`.
+  When set, saliency is computed only on the cropped region and embedded back
+  into a full-resolution zero grid. The VLM answer/confidence always come from
+  the full image. Works for all four methods: `attention`, `lime`, `gradcam`,
+  `shap`. Returns HTTP 400 when the crop maps below 4×4 pixels.
+
+#### Cache-key isolation
+- `_explain_cache_key` includes the roi coordinates, so different sub-regions
+  on the same image never share a cached result.
+
+### Tests
+- `api/test_roi.py` — 13 HTTP tests covering happy path, all methods, zero-
+  outside-bbox invariant, validation rejections, and cache key isolation.
+- `tests/test_roi.py` — 6 unit tests for `BoundingBox` model validation.
+
+---
+
 ## [1.6.0] — Phase 23: input sensitivity / robustness
 
 ### Added
