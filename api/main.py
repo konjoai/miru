@@ -27,6 +27,7 @@ Four explanation methods are implemented:
   Pure-NumPy sampling; no ``shap`` library required.
   See :mod:`miru.shap_explainer`.
 """
+
 from __future__ import annotations
 
 import logging
@@ -35,7 +36,7 @@ import time
 import numpy as np
 from fastapi import FastAPI, HTTPException, Path as FastApiPath, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from miru.annotation import MISALIGN_THRESHOLD, compare_annotation
 from miru.dataset_analytics import analyse_dataset
@@ -52,7 +53,7 @@ from miru.diff import diff_records
 from miru.eu_ai_act import generate_report as generate_eu_ai_act_report
 from miru.explain_cache import cache_key, get_cache, is_cache_enabled
 from miru.export import SUPPORTED_FORMATS, export_record
-from miru.fidelity import LOW_FIDELITY_THRESHOLD, deletion_test
+from miru.fidelity import deletion_test
 from miru.history import compute_calibration, query_records
 from miru.model_comparison import compare_models
 from miru.models import registry
@@ -68,7 +69,7 @@ logger = logging.getLogger(__name__)
 # Limits — bounded to keep a public deployment honest and predictable.
 # ---------------------------------------------------------------------------
 
-MAX_BENCH_N = 100        # cap synth-bench sample count per request
+MAX_BENCH_N = 100  # cap synth-bench sample count per request
 MIN_BENCH_N = 1
 DEFAULT_BENCH_N = 20
 DEFAULT_BENCH_SEED = 42
@@ -147,20 +148,82 @@ class MethodsResponse(BaseModel):
     default_model: str
 
 
+class BoundingBox(BaseModel):
+    """Relative bounding box restricting saliency computation to a sub-region.
+
+    All coordinates are fractions of the image dimensions in ``[0, 1]``.
+    ``(x1, y1)`` is the top-left corner; ``(x2, y2)`` is the bottom-right.
+    Both ``x2 > x1`` and ``y2 > y1`` are enforced at construction time.
+    """
+
+    model_config = ConfigDict(frozen=True)
+    x1: float = Field(
+        ..., ge=0.0, le=1.0, description="Left edge, fraction of image width."
+    )
+    y1: float = Field(
+        ..., ge=0.0, le=1.0, description="Top edge, fraction of image height."
+    )
+    x2: float = Field(
+        ..., ge=0.0, le=1.0, description="Right edge, fraction of image width."
+    )
+    y2: float = Field(
+        ..., ge=0.0, le=1.0, description="Bottom edge, fraction of image height."
+    )
+
+    @model_validator(mode="after")
+    def _check_box_order(self) -> "BoundingBox":
+        """Ensure the box is non-degenerate (width > 0 and height > 0)."""
+        if self.x2 <= self.x1:
+            raise ValueError(f"x2 ({self.x2}) must be greater than x1 ({self.x1})")
+        if self.y2 <= self.y1:
+            raise ValueError(f"y2 ({self.y2}) must be greater than y1 ({self.y1})")
+        return self
+
+
 class ExplainRequest(BaseModel):
     model_config = ConfigDict(frozen=True)
     image_b64: str = Field(..., description="Base64-encoded source image (PNG/JPEG).")
-    model_name: str = Field("mock", description="Registered backend name (see /methods).")
-    method: str = Field("attention", description=f"Explanation method. Implemented: {IMPLEMENTED_METHODS}.")
-    question: str = Field("Where is the salient region?", description="Prompt to condition the backend.")
-    alpha: float = Field(0.5, ge=0.0, le=1.0, description="Heatmap opacity for the overlay.")
+    model_name: str = Field(
+        "mock", description="Registered backend name (see /methods)."
+    )
+    method: str = Field(
+        "attention",
+        description=f"Explanation method. Implemented: {IMPLEMENTED_METHODS}.",
+    )
+    question: str = Field(
+        "Where is the salient region?", description="Prompt to condition the backend."
+    )
+    alpha: float = Field(
+        0.5, ge=0.0, le=1.0, description="Heatmap opacity for the overlay."
+    )
     colormap: str = Field("jet", description="One of jet | hot | viridis.")
-    top_k: int = Field(5, ge=1, le=64, description="Number of top attention regions to return.")
-    n_samples: int = Field(64, ge=2, le=MAX_LIME_SAMPLES, description="LIME perturbation count.")
-    n_segments: int = Field(36, ge=4, le=MAX_LIME_SEGMENTS, description="LIME superpixel count.")
-    occlusion_grid: int = Field(8, ge=2, le=MAX_OCCLUSION_GRID, description="GradCAM occlusion grid side.")
-    shap_grid: int = Field(7, ge=2, le=16, description="SHAP tile grid side (shap_grid × shap_grid tiles).")
-    shap_samples: int = Field(32, ge=2, le=MAX_LIME_SAMPLES, description="SHAP coalitions sampled per tile.")
+    top_k: int = Field(
+        5, ge=1, le=64, description="Number of top attention regions to return."
+    )
+    n_samples: int = Field(
+        64, ge=2, le=MAX_LIME_SAMPLES, description="LIME perturbation count."
+    )
+    n_segments: int = Field(
+        36, ge=4, le=MAX_LIME_SEGMENTS, description="LIME superpixel count."
+    )
+    occlusion_grid: int = Field(
+        8, ge=2, le=MAX_OCCLUSION_GRID, description="GradCAM occlusion grid side."
+    )
+    shap_grid: int = Field(
+        7, ge=2, le=16, description="SHAP tile grid side (shap_grid × shap_grid tiles)."
+    )
+    shap_samples: int = Field(
+        32, ge=2, le=MAX_LIME_SAMPLES, description="SHAP coalitions sampled per tile."
+    )
+    roi: BoundingBox | None = Field(
+        None,
+        description=(
+            "Optional region-of-interest bounding box (relative coords in [0, 1]). "
+            "When set, saliency is computed on the cropped region and embedded back "
+            "into a full-resolution grid with zeros outside the ROI. "
+            "The answer/confidence always come from the full image."
+        ),
+    )
 
 
 class TopRegion(BaseModel):
@@ -243,7 +306,9 @@ class ConsensusResponse(BaseModel):
 class ExplainCompareRequest(BaseModel):
     model_config = ConfigDict(frozen=True)
     image_b64: str = Field(..., description="Base64-encoded source image.")
-    model_name: str = Field("mock", description="Backend name (shared by both methods).")
+    model_name: str = Field(
+        "mock", description="Backend name (shared by both methods)."
+    )
     method_a: str = Field("attention", description="First explanation method.")
     method_b: str = Field("gradcam", description="Second explanation method.")
     question: str = Field("Where is the salient region?")
@@ -253,7 +318,9 @@ class ExplainCompareRequest(BaseModel):
     n_samples: int = Field(48, ge=2, le=MAX_LIME_SAMPLES)
     n_segments: int = Field(36, ge=4, le=MAX_LIME_SEGMENTS)
     shap_grid: int = Field(5, ge=2, le=16, description="SHAP tile grid side.")
-    shap_samples: int = Field(16, ge=2, le=MAX_LIME_SAMPLES, description="SHAP coalitions per tile.")
+    shap_samples: int = Field(
+        16, ge=2, le=MAX_LIME_SAMPLES, description="SHAP coalitions per tile."
+    )
     occlusion_grid: int = Field(6, ge=2, le=MAX_OCCLUSION_GRID)
 
 
@@ -344,14 +411,18 @@ class BatchExplainRequest(BaseModel):
 
     model_config = ConfigDict(frozen=True)
     items: list[ExplainRequest] = Field(
-        ..., min_length=1, max_length=MAX_BATCH_ITEMS,
+        ...,
+        min_length=1,
+        max_length=MAX_BATCH_ITEMS,
         description=f"Per-image requests. 1..{MAX_BATCH_ITEMS}.",
     )
     fidelity: bool = Field(
-        False, description="Run the deletion test on every item.",
+        False,
+        description="Run the deletion test on every item.",
     )
     record: bool = Field(
-        True, description="Persist a JSONL trace per item (no-op when MIRU_RECORD unset).",
+        True,
+        description="Persist a JSONL trace per item (no-op when MIRU_RECORD unset).",
     )
     stop_on_error: bool = Field(
         False,
@@ -546,15 +617,16 @@ class PosthocConsensusRequest(BaseModel):
 
     model_config = ConfigDict(frozen=True)
     analysis_ids: list[str] = Field(
-        ..., min_length=2, max_length=MAX_POSTHOC_IDS,
+        ...,
+        min_length=2,
+        max_length=MAX_POSTHOC_IDS,
         description=f"Distinct analysis_ids to combine (2..{MAX_POSTHOC_IDS}).",
     )
     weighting: str = Field(
         "fidelity",
         description="One of: fidelity | confidence | uniform.",
     )
-    top_k: int = Field(5, ge=1, le=64,
-                       description="Top consensus cells to return.")
+    top_k: int = Field(5, ge=1, le=64, description="Top consensus cells to return.")
 
 
 class PerRecordContributionModel(BaseModel):
@@ -597,24 +669,32 @@ class SearchRequest(BaseModel):
 
     model_config = ConfigDict(frozen=True)
     query_grid: list[list[float]] | None = Field(
-        None, description="2-D float saliency map used as the query.",
+        None,
+        description="2-D float saliency map used as the query.",
     )
     query_analysis_id: str | None = Field(
-        None, description="Pull the query grid from this recorded analysis.",
+        None,
+        description="Pull the query grid from this recorded analysis.",
     )
     method: str | None = Field(
-        None, description="Restrict candidates to this explanation method.",
+        None,
+        description="Restrict candidates to this explanation method.",
     )
     model: str | None = Field(
-        None, description="Restrict candidates to this backend.",
+        None,
+        description="Restrict candidates to this backend.",
     )
     top_k: int = Field(10, ge=1, le=MAX_SEARCH_TOP_K)
     min_similarity: float | None = Field(
-        None, ge=-1.0, le=1.0,
+        None,
+        ge=-1.0,
+        le=1.0,
         description="Drop matches with cosine below this value.",
     )
     max_scan: int = Field(
-        500, ge=1, le=MAX_SEARCH_SCAN,
+        500,
+        ge=1,
+        le=MAX_SEARCH_SCAN,
         description="Maximum candidates to score before slicing.",
     )
 
@@ -707,6 +787,11 @@ def methods() -> MethodsResponse:
 
 def _explain_cache_key(req: ExplainRequest, fidelity: bool) -> str:
     """Cache key covering every input that materially affects the response."""
+    roi_key = (
+        {"x1": req.roi.x1, "y1": req.roi.y1, "x2": req.roi.x2, "y2": req.roi.y2}
+        if req.roi is not None
+        else None
+    )
     params = {
         "question": req.question,
         "alpha": req.alpha,
@@ -718,8 +803,60 @@ def _explain_cache_key(req: ExplainRequest, fidelity: bool) -> str:
         "shap_grid": req.shap_grid,
         "shap_samples": req.shap_samples,
         "fidelity": bool(fidelity),
+        "roi": roi_key,
     }
     return cache_key(req.image_b64, req.method, req.model_name, params)
+
+
+def _apply_roi_saliency(
+    full_image: np.ndarray,
+    roi: BoundingBox,
+    method: str,
+    backend: object,
+    req: ExplainRequest,
+) -> tuple[object, np.ndarray]:
+    """Run the chosen explainer on the ROI crop; embed result in a full-size grid.
+
+    The VLM answer always comes from the *full* image so it reflects the whole
+    scene.  Saliency is computed only on the cropped pixels, confining attribution
+    to the area of interest.  Non-ROI cells in the returned grid are zero.
+
+    Raises ``HTTPException(400)`` when the crop is smaller than 4×4 pixels.
+    """
+    resolution = settings.attention_resolution
+    H, W = full_image.shape[:2]
+
+    px1 = int(roi.x1 * W)
+    py1 = int(roi.y1 * H)
+    px2 = max(px1 + 1, min(W, int(roi.x2 * W)))
+    py2 = max(py1 + 1, min(H, int(roi.y2 * H)))
+
+    crop_h, crop_w = py2 - py1, px2 - px1
+    if crop_h < 4 or crop_w < 4:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"roi maps to a {crop_h}×{crop_w} pixel crop on this image "
+                "(min 4×4 required). Expand the bounding box."
+            ),
+        )
+
+    crop = full_image[py1:py2, px1:px2]
+
+    full_out = backend.infer(full_image, req.question)  # type: ignore[union-attr]
+
+    _, saliency_crop = _run_method(method, backend, crop, req)
+
+    gc1 = int(roi.x1 * resolution)
+    gr1 = int(roi.y1 * resolution)
+    gc2 = max(gc1 + 1, min(resolution, int(roi.x2 * resolution)))
+    gr2 = max(gr1 + 1, min(resolution, int(roi.y2 * resolution)))
+
+    scaled = _EXTRACTOR.resize_to_grid(saliency_crop, gr2 - gr1, gc2 - gc1)
+
+    full_grid = np.zeros((resolution, resolution), dtype=np.float32)
+    full_grid[gr1:gr2, gc1:gc2] = scaled
+    return full_out, full_grid
 
 
 def _run_explain_uncached(
@@ -738,7 +875,12 @@ def _run_explain_uncached(
     image_array = _decode_to_float_array(req.image_b64)
 
     t0 = time.perf_counter()
-    out, saliency_grid = _run_method(req.method, backend, image_array, req)
+    if req.roi is not None:
+        out, saliency_grid = _apply_roi_saliency(
+            image_array, req.roi, req.method, backend, req
+        )
+    else:
+        out, saliency_grid = _run_method(req.method, backend, image_array, req)
     latency_ms = (time.perf_counter() - t0) * 1_000.0
 
     top = _EXTRACTOR.top_k_regions(saliency_grid, k=req.top_k)
@@ -755,7 +897,10 @@ def _run_explain_uncached(
     fidelity_dict: dict[str, object] | None = None
     if fidelity:
         result = deletion_test(
-            backend, image_array, req.question, saliency_grid,
+            backend,
+            image_array,
+            req.question,
+            saliency_grid,
             baseline_confidence=float(out.confidence),
         )
         fidelity_dict = {
@@ -783,7 +928,8 @@ def _run_explain_uncached(
     }
     analysis_id = (
         maybe_record(trace_dict, image_b64=req.image_b64, question=req.question)
-        if record else None
+        if record
+        else None
     ) or ""
 
     return {
@@ -826,7 +972,9 @@ def _run_explain_with_cache(
     """
     cache = get_cache()
     if cache is None:
-        return ExplainResponse(**_run_explain_uncached(req, fidelity=fidelity, record=record)), False
+        return ExplainResponse(
+            **_run_explain_uncached(req, fidelity=fidelity, record=record)
+        ), False
 
     key = _explain_cache_key(req, fidelity)
     t0 = time.perf_counter()
@@ -847,11 +995,15 @@ def _run_explain_with_cache(
         }
         fresh_id = (
             maybe_record(trace_dict, image_b64=req.image_b64, question=req.question)
-            if record else None
+            if record
+            else None
         ) or ""
         # Build a response with the fresh ID + observed lookup latency.
-        merged = {**cached, "analysis_id": fresh_id,
-                  "latency_ms": (time.perf_counter() - t0) * 1_000.0}
+        merged = {
+            **cached,
+            "analysis_id": fresh_id,
+            "latency_ms": (time.perf_counter() - t0) * 1_000.0,
+        }
         return ExplainResponse(**merged), True
 
     payload = _run_explain_uncached(req, fidelity=fidelity, record=record)
@@ -899,7 +1051,9 @@ def explain(
         response.headers["X-Miru-Cache"] = "hit" if was_hit else "miss"
         return result
     response.headers["X-Miru-Cache"] = "bypass"
-    return ExplainResponse(**_run_explain_uncached(req, fidelity=fidelity, record=record))
+    return ExplainResponse(
+        **_run_explain_uncached(req, fidelity=fidelity, record=record)
+    )
 
 
 @app.post("/explain/compare", response_model=ExplainCompareResponse)
@@ -926,10 +1080,16 @@ def explain_compare(req: ExplainCompareRequest) -> ExplainCompareResponse:
     latency_ms = (time.perf_counter() - t0) * 1_000.0
 
     try:
-        overlay_a = generate_overlay(req.image_b64, sal_a, alpha=req.alpha, colormap=req.colormap)
-        overlay_b = generate_overlay(req.image_b64, sal_b, alpha=req.alpha, colormap=req.colormap)
+        overlay_a = generate_overlay(
+            req.image_b64, sal_a, alpha=req.alpha, colormap=req.colormap
+        )
+        overlay_b = generate_overlay(
+            req.image_b64, sal_b, alpha=req.alpha, colormap=req.colormap
+        )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"overlay generation failed: {exc}") from exc
+        raise HTTPException(
+            status_code=400, detail=f"overlay generation failed: {exc}"
+        ) from exc
 
     top_a = _EXTRACTOR.top_k_regions(sal_a, k=req.top_k)
     top_b = _EXTRACTOR.top_k_regions(sal_b, k=req.top_k)
@@ -1006,16 +1166,18 @@ def explain_consensus(req: ConsensusRequest) -> ConsensusResponse:
                 status_code=400, detail=f"overlay generation failed: {exc}"
             ) from exc
         top = _EXTRACTOR.top_k_regions(sal, k=req.top_k)
-        per_method.append((
-            method,
-            sal,
-            MethodResult(
-                method=method,
-                overlay_b64=overlay,
-                attention_grid=sal.astype(float).tolist(),
-                top_regions=[TopRegion(row=r, col=c, score=s) for r, c, s in top],
-            ),
-        ))
+        per_method.append(
+            (
+                method,
+                sal,
+                MethodResult(
+                    method=method,
+                    overlay_b64=overlay,
+                    attention_grid=sal.astype(float).tolist(),
+                    top_regions=[TopRegion(row=r, col=c, score=s) for r, c, s in top],
+                ),
+            )
+        )
 
     consensus = compute_consensus(
         [(name, sal) for name, sal, _ in per_method],
@@ -1084,9 +1246,7 @@ def analysis_export(
     if format not in SUPPORTED_FORMATS:
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"format must be one of {SUPPORTED_FORMATS}, got {format!r}"
-            ),
+            detail=(f"format must be one of {SUPPORTED_FORMATS}, got {format!r}"),
         )
     record = find_record_by_id(analysis_id)
     if record is None:
@@ -1206,8 +1366,7 @@ def _get_backend_or_400(model_name: str):
         raise HTTPException(
             status_code=400,
             detail=(
-                f"unknown model_name='{model_name}'. "
-                f"Available: {registry.available()}."
+                f"unknown model_name='{model_name}'. Available: {registry.available()}."
             ),
         ) from exc
 
@@ -1310,7 +1469,7 @@ def _decode_to_float_array(image_b64: str) -> np.ndarray:
     return rgba[..., :3].astype(np.float32) / 255.0
 
 
-def _float_array_to_pil(image_array: np.ndarray) -> "Image.Image":
+def _float_array_to_pil(image_array: np.ndarray) -> "Image.Image":  # noqa: F821
     """Convert a float32 (H, W, 3) ∈ [0, 1] array to a PIL RGB Image."""
     from PIL import Image
 
@@ -1458,18 +1617,48 @@ class SensitivityRequest(BaseModel):
 
     model_config = ConfigDict(frozen=True)
     image_b64: str = Field(..., description="Base64-encoded source image (PNG/JPEG).")
-    model_name: str = Field("mock", description="Registered backend name (see /methods).")
-    method: str = Field("attention", description=f"Explanation method. Implemented: {IMPLEMENTED_METHODS}.")
-    question: str = Field("Where is the salient region?", description="Prompt to condition the backend.")
-    n_samples: int = Field(64, ge=2, le=MAX_LIME_SAMPLES, description="LIME perturbation count.")
-    n_segments: int = Field(36, ge=4, le=MAX_LIME_SEGMENTS, description="LIME superpixel count.")
-    occlusion_grid: int = Field(8, ge=2, le=MAX_OCCLUSION_GRID, description="GradCAM occlusion grid side.")
+    model_name: str = Field(
+        "mock", description="Registered backend name (see /methods)."
+    )
+    method: str = Field(
+        "attention",
+        description=f"Explanation method. Implemented: {IMPLEMENTED_METHODS}.",
+    )
+    question: str = Field(
+        "Where is the salient region?", description="Prompt to condition the backend."
+    )
+    n_samples: int = Field(
+        64, ge=2, le=MAX_LIME_SAMPLES, description="LIME perturbation count."
+    )
+    n_segments: int = Field(
+        36, ge=4, le=MAX_LIME_SEGMENTS, description="LIME superpixel count."
+    )
+    occlusion_grid: int = Field(
+        8, ge=2, le=MAX_OCCLUSION_GRID, description="GradCAM occlusion grid side."
+    )
     shap_grid: int = Field(7, ge=2, le=16, description="SHAP tile grid side.")
-    shap_samples: int = Field(32, ge=2, le=MAX_LIME_SAMPLES, description="SHAP coalitions per tile.")
-    sigmas: list[float] = Field(default_factory=lambda: list(DEFAULT_SIGMAS), description="Gaussian noise standard deviations to sweep, each in (0, 1].")
-    n_trials: int = Field(3, ge=1, le=MAX_SENSITIVITY_TRIALS, description="Perturbed samples averaged per σ.")
-    seed: int = Field(0, ge=0, description="RNG seed — identical inputs give identical results.")
-    stability_threshold: float = Field(0.85, ge=0.0, le=1.0, description="stability_score at/above which is_stable is true.")
+    shap_samples: int = Field(
+        32, ge=2, le=MAX_LIME_SAMPLES, description="SHAP coalitions per tile."
+    )
+    sigmas: list[float] = Field(
+        default_factory=lambda: list(DEFAULT_SIGMAS),
+        description="Gaussian noise standard deviations to sweep, each in (0, 1].",
+    )
+    n_trials: int = Field(
+        3,
+        ge=1,
+        le=MAX_SENSITIVITY_TRIALS,
+        description="Perturbed samples averaged per σ.",
+    )
+    seed: int = Field(
+        0, ge=0, description="RNG seed — identical inputs give identical results."
+    )
+    stability_threshold: float = Field(
+        0.85,
+        ge=0.0,
+        le=1.0,
+        description="stability_score at/above which is_stable is true.",
+    )
 
 
 class PerturbationStat(BaseModel):
@@ -1507,7 +1696,9 @@ def _validate_sigmas(sigmas: list[float]) -> tuple[float, ...]:
         )
     for s in sigmas:
         if not (0.0 < s <= 1.0):
-            raise HTTPException(status_code=400, detail=f"each sigma must be in (0, 1]; got {s}.")
+            raise HTTPException(
+                status_code=400, detail=f"each sigma must be in (0, 1]; got {s}."
+            )
     return tuple(sigmas)
 
 
@@ -1553,7 +1744,9 @@ def explain_sensitivity(req: SensitivityRequest) -> SensitivityResponse:
         worst_sigma=result.worst_sigma,
         worst_drift=result.worst_drift,
         per_sigma=[
-            PerturbationStat(sigma=p.sigma, mean_drift=p.mean_drift, max_drift=p.max_drift)
+            PerturbationStat(
+                sigma=p.sigma, mean_drift=p.mean_drift, max_drift=p.max_drift
+            )
             for p in result.per_sigma
         ],
         latency_ms=latency_ms,
@@ -1587,17 +1780,25 @@ class DatasetAnalyticsRequest(BaseModel):
 
     model_config = ConfigDict(frozen=True)
     images: list[DatasetBatchItem] = Field(
-        ..., min_length=1, max_length=MAX_DATASET_BATCH,
+        ...,
+        min_length=1,
+        max_length=MAX_DATASET_BATCH,
         description=f"Per-image items. 1..{MAX_DATASET_BATCH}.",
     )
     model_name: str = Field("mock", description="Backend for all images.")
-    method: str = Field("attention", description=f"Explanation method. Implemented: {IMPLEMENTED_METHODS}.")
+    method: str = Field(
+        "attention",
+        description=f"Explanation method. Implemented: {IMPLEMENTED_METHODS}.",
+    )
     mean_threshold: float = Field(
-        0.5, gt=0.0, lt=1.0,
+        0.5,
+        gt=0.0,
+        lt=1.0,
         description="Mean-saliency threshold for spurious-correlation detection.",
     )
     cv_threshold: float = Field(
-        0.5, gt=0.0,
+        0.5,
+        gt=0.0,
         description="CV (std/mean) upper bound for spurious-correlation detection.",
     )
     top_k: int = Field(5, ge=1, le=64)
@@ -1669,12 +1870,14 @@ def analyze_batch(req: DatasetAnalyticsRequest) -> DatasetAnalyticsResponse:
         )
         out, saliency = _run_method(req.method, backend, image_array, item_req)
         grids.append(saliency)
-        per_image.append(PerImageResult(
-            index=idx,
-            answer=out.answer,
-            confidence=float(out.confidence),
-            attention_grid=saliency.astype(float).tolist(),
-        ))
+        per_image.append(
+            PerImageResult(
+                index=idx,
+                answer=out.answer,
+                confidence=float(out.confidence),
+                attention_grid=saliency.astype(float).tolist(),
+            )
+        )
 
     analytics = analyse_dataset(
         grids,
@@ -1721,8 +1924,13 @@ class AnnotateRequest(BaseModel):
     model_config = ConfigDict(frozen=True)
     image_b64: str = Field(..., description="Base64-encoded source image (PNG/JPEG).")
     model_name: str = Field("mock", description="Registered backend name.")
-    method: str = Field("attention", description=f"Explanation method. Implemented: {IMPLEMENTED_METHODS}.")
-    question: str = Field("Where is the salient region?", description="Prompt to condition the backend.")
+    method: str = Field(
+        "attention",
+        description=f"Explanation method. Implemented: {IMPLEMENTED_METHODS}.",
+    )
+    question: str = Field(
+        "Where is the salient region?", description="Prompt to condition the backend."
+    )
     mask: list[list[float]] = Field(
         ...,
         description=(
@@ -1738,10 +1946,14 @@ class AnnotateRequest(BaseModel):
         ),
     )
     top_pct: float = Field(
-        0.20, gt=0.0, lt=1.0,
+        0.20,
+        gt=0.0,
+        lt=1.0,
         description="Fraction of saliency pixels used as threshold for IoU.",
     )
-    top_k: int = Field(5, ge=1, le=64, description="Top regions returned in the explain block.")
+    top_k: int = Field(
+        5, ge=1, le=64, description="Top regions returned in the explain block."
+    )
     alpha: float = Field(0.5, ge=0.0, le=1.0)
     colormap: str = Field("jet")
     n_samples: int = Field(64, ge=2, le=MAX_LIME_SAMPLES)
@@ -1930,20 +2142,30 @@ def explain_batch(req: BatchExplainRequest) -> BatchExplainResponse:
 
     for idx, item_req in enumerate(req.items):
         if aborted:
-            items.append(BatchItemResult(
-                index=idx, success=False, cached=False,
-                error="skipped: prior item failed (stop_on_error=true)",
-            ))
+            items.append(
+                BatchItemResult(
+                    index=idx,
+                    success=False,
+                    cached=False,
+                    error="skipped: prior item failed (stop_on_error=true)",
+                )
+            )
             continue
         try:
             if is_cache_enabled():
                 resp, was_hit = _run_explain_with_cache(
-                    item_req, fidelity=req.fidelity, record=req.record,
+                    item_req,
+                    fidelity=req.fidelity,
+                    record=req.record,
                 )
             else:
-                resp = ExplainResponse(**_run_explain_uncached(
-                    item_req, fidelity=req.fidelity, record=req.record,
-                ))
+                resp = ExplainResponse(
+                    **_run_explain_uncached(
+                        item_req,
+                        fidelity=req.fidelity,
+                        record=req.record,
+                    )
+                )
                 was_hit = False
             if was_hit:
                 cache_hits += 1
@@ -1952,23 +2174,37 @@ def explain_batch(req: BatchExplainRequest) -> BatchExplainResponse:
             success_confs.append(float(resp.confidence))
             if resp.fidelity is not None:
                 success_fids.append(float(resp.fidelity.fidelity_score))
-            items.append(BatchItemResult(
-                index=idx, success=True, cached=was_hit, response=resp,
-            ))
+            items.append(
+                BatchItemResult(
+                    index=idx,
+                    success=True,
+                    cached=was_hit,
+                    response=resp,
+                )
+            )
         except HTTPException as exc:
-            items.append(BatchItemResult(
-                index=idx, success=False, cached=False, error=str(exc.detail),
-            ))
+            items.append(
+                BatchItemResult(
+                    index=idx,
+                    success=False,
+                    cached=False,
+                    error=str(exc.detail),
+                )
+            )
             if req.stop_on_error:
                 aborted = True
         except (ValueError, RuntimeError, KeyError) as exc:
             # Boundary code: these are the realistic failure modes from
             # the image decode / backend / numpy paths. Anything else
             # is a programmer bug and should propagate.
-            items.append(BatchItemResult(
-                index=idx, success=False, cached=False,
-                error=f"{type(exc).__name__}: {exc}",
-            ))
+            items.append(
+                BatchItemResult(
+                    index=idx,
+                    success=False,
+                    cached=False,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            )
             if req.stop_on_error:
                 aborted = True
 
@@ -1982,7 +2218,9 @@ def explain_batch(req: BatchExplainRequest) -> BatchExplainResponse:
         failure_count=failure_count,
         cache_hits=cache_hits,
         cache_misses=cache_misses,
-        mean_confidence=(sum(success_confs) / len(success_confs)) if success_confs else None,
+        mean_confidence=(sum(success_confs) / len(success_confs))
+        if success_confs
+        else None,
         mean_fidelity=(sum(success_fids) / len(success_fids)) if success_fids else None,
         total_latency_ms=total_latency_ms,
     )
@@ -2024,21 +2262,28 @@ def explain_cache_clear() -> CacheClearResponse:
 @app.get("/explain/history", response_model=HistoryResponse)
 def explain_history(
     limit: int = Query(
-        50, ge=1, le=MAX_HISTORY_LIMIT,
+        50,
+        ge=1,
+        le=MAX_HISTORY_LIMIT,
         description=f"Page size, 1..{MAX_HISTORY_LIMIT}.",
     ),
     offset: int = Query(
-        0, ge=0,
+        0,
+        ge=0,
         description="Records to skip before the page starts.",
     ),
     method: str | None = Query(
-        None, description="Exact-match explanation method filter (attention / lime / gradcam / shap).",
+        None,
+        description="Exact-match explanation method filter (attention / lime / gradcam / shap).",
     ),
     model: str | None = Query(
-        None, description="Exact-match backend name filter.",
+        None,
+        description="Exact-match backend name filter.",
     ),
     min_confidence: float | None = Query(
-        None, ge=0.0, le=1.0,
+        None,
+        ge=0.0,
+        le=1.0,
         description="Lower bound on trace.confidence.",
     ),
     since: str | None = Query(
@@ -2089,17 +2334,23 @@ def explain_history(
 @app.get("/explain/calibration", response_model=CalibrationResponse)
 def explain_calibration(
     n_bins: int = Query(
-        10, ge=2, le=MAX_CALIBRATION_BINS,
+        10,
+        ge=2,
+        le=MAX_CALIBRATION_BINS,
         description=f"Equal-width bins on [0, 1]. 2..{MAX_CALIBRATION_BINS}.",
     ),
     method: str | None = Query(
-        None, description="Restrict to one explanation method.",
+        None,
+        description="Restrict to one explanation method.",
     ),
     model: str | None = Query(
-        None, description="Restrict to one backend.",
+        None,
+        description="Restrict to one backend.",
     ),
     limit: int = Query(
-        100, ge=1, le=MAX_HISTORY_LIMIT,
+        100,
+        ge=1,
+        le=MAX_HISTORY_LIMIT,
         description=(
             "Maximum recent records to include in the curve. "
             "Only records carrying a fidelity score count toward this cap."
@@ -2130,7 +2381,9 @@ def explain_calibration(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Cap to ``limit`` records that actually carry a fidelity score.
-    candidates = [item for item in page.items if item.fidelity_score is not None][:limit]
+    candidates = [item for item in page.items if item.fidelity_score is not None][
+        :limit
+    ]
     result = compute_calibration(candidates, n_bins=n_bins)
 
     return CalibrationResponse(
@@ -2141,9 +2394,12 @@ def explain_calibration(
         mean_fidelity=result.mean_fidelity,
         bins=[
             CalibrationBinModel(
-                lo=b.lo, hi=b.hi, count=b.count,
+                lo=b.lo,
+                hi=b.hi,
+                count=b.count,
                 mean_confidence=b.mean_confidence,
-                mean_fidelity=b.mean_fidelity, gap=b.gap,
+                mean_fidelity=b.mean_fidelity,
+                gap=b.gap,
             )
             for b in result.bins
         ],
@@ -2199,8 +2455,11 @@ def explain_diff(req: DiffRequest) -> DiffResponse:
         delta_grid=result.delta_grid,
         top_changed=[
             TopChangedRegionModel(
-                row=t.row, col=t.col,
-                value_a=t.value_a, value_b=t.value_b, delta=t.delta,
+                row=t.row,
+                col=t.col,
+                value_a=t.value_a,
+                value_b=t.value_b,
+                delta=t.delta,
             )
             for t in result.top_changed
         ],
@@ -2224,7 +2483,9 @@ def explain_models_compare(
         examples=["mock", "mock,clip"],
     ),
     limit: int = Query(
-        50, ge=1, le=MAX_HISTORY_LIMIT,
+        50,
+        ge=1,
+        le=MAX_HISTORY_LIMIT,
         description=f"Per-model record cap, 1..{MAX_HISTORY_LIMIT}.",
     ),
     method: str | None = Query(
@@ -2316,7 +2577,9 @@ def explain_consensus_by_ids(
 
     try:
         result = build_posthoc_consensus(
-            records, weighting=req.weighting, top_k=req.top_k,
+            records,
+            weighting=req.weighting,
+            top_k=req.top_k,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
