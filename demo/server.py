@@ -158,6 +158,18 @@ def explain_page():
     return FileResponse(_DEMO_DIR / "explain.html")
 
 
+@app.get("/live.html", include_in_schema=False)
+@app.get("/live", include_in_schema=False)
+def live_page():
+    """Full-feature live showcase at /live or /live.html.
+
+    Wires every Miru capability into one page: The Eye, Explainer Lab,
+    Cross-Modal Trace, Sensitivity Probe, Consensus Builder, History
+    Timeline, EU AI Act compliance gauges, and Cache Stats.
+    """
+    return FileResponse(_DEMO_DIR / "live.html")
+
+
 # ---------------------------------------------------------------------------
 # Deployable explainability API mount
 # ---------------------------------------------------------------------------
