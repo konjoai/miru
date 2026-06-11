@@ -32,3 +32,6 @@ miru_traces/
 # Cache database — content-addressed, regenerable
 miru_cache.db
 *.db-journal
+
+# Claude Code agent worktrees — ephemeral, never committed
+.claude/worktrees/
