@@ -29,8 +29,9 @@ htmlcov/
 demo/_traces/
 miru_traces/
 
-# Cache database — content-addressed, regenerable
+# Runtime SQLite databases — regenerable
 miru_cache.db
+miru_alerts.db
 *.db-journal
 
 # Claude Code agent worktrees — ephemeral, never committed
