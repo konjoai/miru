@@ -61,6 +61,13 @@ from miru.posthoc_consensus import build_consensus as build_posthoc_consensus
 from miru.recorder import find_record_by_id, maybe_record
 from miru.search import search_by_pattern
 from miru.sensitivity import DEFAULT_SIGMAS, compute_sensitivity
+from miru.alerts import (
+    SUPPORTED_FIELDS,
+    SUPPORTED_OPS,
+    fire_alerts_async,
+    get_store,
+    validate_webhook_url,
+)
 from miru.visualization.overlay import decode_image_b64, generate_overlay
 
 logger = logging.getLogger(__name__)
@@ -859,6 +866,27 @@ def _apply_roi_saliency(
     return full_out, full_grid
 
 
+def _evaluate_and_fire_alerts(
+    analysis_id: str,
+    confidence: float,
+    fidelity_dict: dict[str, object] | None,
+) -> None:
+    """Evaluate alert rules against this analysis result and fire webhooks."""
+    store = get_store()
+    if store is None:
+        return
+    result: dict[str, object] = {"confidence": confidence}
+    if fidelity_dict is not None:
+        result["fidelity"] = fidelity_dict
+    try:
+        fired = store.evaluate(analysis_id, result)
+    except (ValueError, OSError) as exc:
+        logger.warning("alert evaluation failed for %s: %s", analysis_id, exc)
+        return
+    if fired:
+        fire_alerts_async(fired, store)
+
+
 def _run_explain_uncached(
     req: ExplainRequest,
     *,
@@ -932,6 +960,9 @@ def _run_explain_uncached(
         else None
     ) or ""
 
+    # Evaluate alert rules (non-blocking; webhook delivery is async).
+    _evaluate_and_fire_alerts(analysis_id, float(out.confidence), fidelity_dict)
+
     return {
         "model_name": backend.name,
         "method": req.method,
@@ -1004,6 +1035,11 @@ def _run_explain_with_cache(
             "analysis_id": fresh_id,
             "latency_ms": (time.perf_counter() - t0) * 1_000.0,
         }
+        _evaluate_and_fire_alerts(
+            fresh_id,
+            float(cached["confidence"]),
+            cached.get("fidelity"),  # type: ignore[arg-type]
+        )
         return ExplainResponse(**merged), True
 
     payload = _run_explain_uncached(req, fidelity=fidelity, record=record)
@@ -2657,6 +2693,187 @@ def explain_search(req: SearchRequest) -> SearchResponse:
         n_scanned=result.n_scanned,
         top_k=result.top_k,
         query_analysis_id=result.query_analysis_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Alert rules + history endpoints
+# ---------------------------------------------------------------------------
+
+MAX_ALERT_HISTORY_LIMIT = 200
+
+
+class CreateRuleRequest(BaseModel):
+    """Body for ``POST /explain/alerts/rules``."""
+
+    model_config = ConfigDict(frozen=True)
+    name: str = Field(
+        ..., min_length=1, max_length=200, description="Human-readable rule name."
+    )
+    field: str = Field(
+        ...,
+        description=f"Condition field. One of: {SUPPORTED_FIELDS}.",
+    )
+    op: str = Field(
+        ...,
+        description=f"Comparison operator. One of: {SUPPORTED_OPS}.",
+    )
+    threshold: float = Field(..., description="Numeric threshold for the condition.")
+    webhook_url: str = Field(
+        ...,
+        description="HTTP/HTTPS URL that receives a POST when the rule fires.",
+    )
+
+
+class RuleResponse(BaseModel):
+    """One rule row serialised for the API."""
+
+    model_config = ConfigDict(frozen=True)
+    rule_id: str
+    name: str
+    field: str
+    op: str
+    threshold: float
+    webhook_url: str
+    enabled: bool
+    created_at: str
+
+
+class RulesListResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    rules: list[RuleResponse]
+    total: int
+
+
+class DeleteRuleResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    deleted: bool
+    rule_id: str
+
+
+class FiredAlertResponse(BaseModel):
+    """One fired-alert history row."""
+
+    model_config = ConfigDict(frozen=True)
+    alert_id: str
+    rule_id: str
+    rule_name: str
+    analysis_id: str
+    field: str
+    fired_value: float
+    threshold: float
+    op: str
+    webhook_url: str
+    ts: str
+    delivered: bool
+
+
+class AlertHistoryResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    alerts: list[FiredAlertResponse]
+    total: int
+    limit: int
+
+
+@app.post("/explain/alerts/rules", response_model=RuleResponse, status_code=201)
+def create_alert_rule(req: CreateRuleRequest) -> RuleResponse:
+    """Create a new alert rule.
+
+    The rule fires whenever ``POST /explain`` produces an output where
+    ``field op threshold`` is true (e.g. ``confidence < 0.4``).
+    When fired, a POST is delivered to ``webhook_url`` and the event is
+    recorded in alert history regardless of delivery status.
+
+    Returns 400 on validation errors (unknown field/op, bad URL).
+    Returns 503 when the alert subsystem is disabled
+    (``MIRU_ALERTS_ENABLED=0``).
+    """
+    store = get_store()
+    if store is None:
+        raise HTTPException(
+            status_code=503,
+            detail="alert subsystem is disabled (MIRU_ALERTS_ENABLED=0)",
+        )
+    if req.field not in SUPPORTED_FIELDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"field must be one of {list(SUPPORTED_FIELDS)}, got {req.field!r}",
+        )
+    if req.op not in SUPPORTED_OPS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"op must be one of {list(SUPPORTED_OPS)}, got {req.op!r}",
+        )
+    try:
+        validate_webhook_url(req.webhook_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        rule = store.create_rule(
+            name=req.name,
+            field=req.field,
+            op=req.op,
+            threshold=req.threshold,
+            webhook_url=req.webhook_url,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return RuleResponse(**rule.to_dict())
+
+
+@app.get("/explain/alerts/rules", response_model=RulesListResponse)
+def list_alert_rules(
+    enabled_only: bool = Query(
+        False, description="When true, return only enabled rules."
+    ),
+) -> RulesListResponse:
+    """List all alert rules."""
+    store = get_store()
+    if store is None:
+        return RulesListResponse(rules=[], total=0)
+    rules = store.list_rules(enabled_only=enabled_only)
+    return RulesListResponse(
+        rules=[RuleResponse(**r.to_dict()) for r in rules],
+        total=len(rules),
+    )
+
+
+@app.delete("/explain/alerts/rules/{rule_id}", response_model=DeleteRuleResponse)
+def delete_alert_rule(
+    rule_id: str = FastApiPath(
+        ..., min_length=8, description="rule_id returned by POST /explain/alerts/rules"
+    ),
+) -> DeleteRuleResponse:
+    """Delete one alert rule by ID. Returns 404 when the ID is not found."""
+    store = get_store()
+    if store is None:
+        raise HTTPException(status_code=503, detail="alert subsystem is disabled")
+    deleted = store.delete_rule(rule_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"rule_id '{rule_id}' not found")
+    return DeleteRuleResponse(deleted=True, rule_id=rule_id)
+
+
+@app.get("/explain/alerts/history", response_model=AlertHistoryResponse)
+def alert_history(
+    limit: int = Query(
+        50,
+        ge=1,
+        le=MAX_ALERT_HISTORY_LIMIT,
+        description=f"Maximum rows to return (1..{MAX_ALERT_HISTORY_LIMIT}).",
+    ),
+) -> AlertHistoryResponse:
+    """Return recent fired alerts, newest first."""
+    store = get_store()
+    if store is None:
+        return AlertHistoryResponse(alerts=[], total=0, limit=limit)
+    alerts = store.list_alerts(limit=limit)
+    return AlertHistoryResponse(
+        alerts=[FiredAlertResponse(**a.to_dict()) for a in alerts],
+        total=len(alerts),
+        limit=limit,
     )
 
 
