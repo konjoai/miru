@@ -1,8 +1,8 @@
 # PLAN.md — Miru Roadmap
 
 **Project:** Miru — Multimodal Reasoning Tracer  
-**Current version:** v1.7.0  
-**Status:** ROI-targeted explanation (Phase 24), input sensitivity / robustness (Phase 23), model comparison · post-hoc consensus · search (Phase 22), 657 tests passing (5 skipped without MIRU_TEST_REAL_BACKENDS=1)
+**Current version:** v1.9.0  
+**Status:** synergistic-faithfulness probe / F_syn (Phase 26), explanation alert rules (Phase 25), ROI-targeted explanation (Phase 24), input sensitivity / robustness (Phase 23), 733 tests passing (5 skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 
@@ -765,11 +765,62 @@ sub-region of the image, confining attribution to the area of interest.
 
 ---
 
-## Phase 25 — TBD
+## Phase 25 — Explanation Alert Rules (v1.8.0) ✅ COMPLETE
+
+**Goal:** Fire webhooks when an `/explain` result crosses a user-defined
+rule — anomaly detection over the live explanation stream.
+
+**Delivered:**
+- `miru/alerts.py` — SQLite-backed `AlertStore` with CRUD over `Rule`s
+  (threshold comparisons on `confidence` / `fidelity_score` and the
+  `low_fidelity` flag), evaluation into `FiredAlert`s, and asynchronous
+  webhook delivery with SSRF-guarded URL validation (`validate_webhook_url`).
+- `POST /explain` wires `_evaluate_and_fire_alerts` (non-blocking; delivery
+  never breaks the request path). Runtime `miru_alerts.db` is git-ignored.
+- `api/test_alerts.py` — rule lifecycle, evaluation, and delivery coverage.
+
+**Ship gate:** shipped + merged (PR #13). Version bookkeeping reconciled in
+Phase 26 (the commit claimed v1.8.0 but never bumped the version files).
+
+---
+
+## Phase 26 — Synergistic-Faithfulness Probe / F_syn (v1.9.0) ✅ COMPLETE
+
+**Goal:** Distinguish faithful cross-modal reasoning from visual-only
+salience. The deletion test (Phase 15) measures *whether* salient pixels
+matter; it can't tell whether they matter *because of the question* or
+regardless of it. Recent work shows deletion/insertion AUC systematically
+over-credits the visual-only case (Cross-Modal Synergy benchmark,
+arXiv:2509.22415 / 2605.22168).
+
+**Delivered:**
+- `miru/synergy.py` — `synergy_test()` measures the modality-level Shapley
+  *interaction*: the discrete mixed second difference of model confidence
+  over presence/absence of the salient visual region (`V`) and the question
+  (`Q`). `interaction = f_both − f_language_only − f_vision_only + f_neither`;
+  `synergy_score = clamp(interaction / max(eps, f_both), 0, 1)`; `low_synergy`
+  flag below `0.3`. Pure NumPy, deterministic, no new deps; reuses
+  `miru.fidelity._mask_top_k` for the visual ablation. The image-independent
+  mock backend reports exactly zero synergy (honest signal). Cites Grabisch &
+  Roubens 1999, Janizek et al. 2021.
+- `POST /explain?synergy=true` — `SynergyBlock` on the response; three extra
+  `backend.infer()` calls (off by default). Folded into `_explain_cache_key`
+  and `BatchExplainRequest`. Works across all four methods.
+- `api/conftest.py` — shared `png_b64` fixture (net DRY reduction).
+- Reconciled the three drifting version sources (`pyproject.toml`,
+  `miru/__init__.py`, `miru/config.py`) and the `/health` version assertion.
+- 23 new tests: `tests/test_synergy.py` (13) + `api/test_synergy.py` (10).
+
+**Ship gate:** 733/733 tests pass (+23 new); 5 skipped; ruff clean;
+`miru/synergy.py` radon-A, zero new DRY violations.
+
+---
+
+## Phase 27 — TBD
 
 Open candidates (P2/P3 from the researched roadmap, plus deferred items):
-- Explanation alerts / anomaly detection — webhook-firing rules
-  matched against `/explain` output (SQLite-backed rule store).
+- ~~Explanation alerts / anomaly detection~~ ✅ shipped in Phase 25.
+- ~~Synergistic-faithfulness probe (F_syn)~~ ✅ shipped in Phase 26.
 - ~~Region-of-interest (ROI) targeted explanation~~ ✅ shipped in Phase 24.
 - ~~Input sensitivity analysis~~ ✅ shipped in Phase 23.
 - ~~Expert annotation alignment (P2)~~ ✅ shipped in Phase 18.

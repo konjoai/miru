@@ -54,6 +54,7 @@ from miru.eu_ai_act import generate_report as generate_eu_ai_act_report
 from miru.explain_cache import cache_key, get_cache, is_cache_enabled
 from miru.export import SUPPORTED_FORMATS, export_record
 from miru.fidelity import deletion_test
+from miru.synergy import synergy_test
 from miru.history import compute_calibration, query_records
 from miru.model_comparison import compare_models
 from miru.models import registry
@@ -251,6 +252,20 @@ class FidelityBlock(BaseModel):
     low_fidelity: bool
 
 
+class SynergyBlock(BaseModel):
+    """Outcome of the modality-level synergy test attached to /explain."""
+
+    model_config = ConfigDict(frozen=True)
+    synergy_score: float
+    interaction: float
+    f_both: float
+    f_language_only: float
+    f_vision_only: float
+    f_neither: float
+    k_pct: float
+    low_synergy: bool
+
+
 class ExplainResponse(BaseModel):
     model_config = ConfigDict(frozen=True)
     model_name: str
@@ -263,6 +278,7 @@ class ExplainResponse(BaseModel):
     latency_ms: float
     analysis_id: str
     fidelity: FidelityBlock | None = None
+    synergy: SynergyBlock | None = None
 
 
 class ConsensusRequest(BaseModel):
@@ -426,6 +442,10 @@ class BatchExplainRequest(BaseModel):
     fidelity: bool = Field(
         False,
         description="Run the deletion test on every item.",
+    )
+    synergy: bool = Field(
+        False,
+        description="Run the modality-level synergy test on every item.",
     )
     record: bool = Field(
         True,
@@ -792,7 +812,7 @@ def methods() -> MethodsResponse:
     )
 
 
-def _explain_cache_key(req: ExplainRequest, fidelity: bool) -> str:
+def _explain_cache_key(req: ExplainRequest, fidelity: bool, synergy: bool) -> str:
     """Cache key covering every input that materially affects the response."""
     roi_key = (
         {"x1": req.roi.x1, "y1": req.roi.y1, "x2": req.roi.x2, "y2": req.roi.y2}
@@ -810,6 +830,7 @@ def _explain_cache_key(req: ExplainRequest, fidelity: bool) -> str:
         "shap_grid": req.shap_grid,
         "shap_samples": req.shap_samples,
         "fidelity": bool(fidelity),
+        "synergy": bool(synergy),
         "roi": roi_key,
     }
     return cache_key(req.image_b64, req.method, req.model_name, params)
@@ -891,6 +912,7 @@ def _run_explain_uncached(
     req: ExplainRequest,
     *,
     fidelity: bool,
+    synergy: bool,
     record: bool,
 ) -> dict[str, object]:
     """Run one /explain end-to-end and return a dict ready for ExplainResponse.
@@ -939,6 +961,26 @@ def _run_explain_uncached(
             "low_fidelity": result.low_fidelity,
         }
 
+    synergy_dict: dict[str, object] | None = None
+    if synergy:
+        syn = synergy_test(
+            backend,
+            image_array,
+            req.question,
+            saliency_grid,
+            baseline_confidence=float(out.confidence),
+        )
+        synergy_dict = {
+            "synergy_score": syn.synergy_score,
+            "interaction": syn.interaction,
+            "f_both": syn.f_both,
+            "f_language_only": syn.f_language_only,
+            "f_vision_only": syn.f_vision_only,
+            "f_neither": syn.f_neither,
+            "k_pct": syn.k_pct,
+            "low_synergy": syn.low_synergy,
+        }
+
     attention_grid_list = saliency_grid.astype(float).tolist()
     top_list = [{"row": int(r), "col": int(c), "score": float(s)} for r, c, s in top]
 
@@ -953,6 +995,7 @@ def _run_explain_uncached(
         "attention_grid": attention_grid_list,
         "top_regions": top_list,
         "fidelity": fidelity_dict,
+        "synergy": synergy_dict,
     }
     analysis_id = (
         maybe_record(trace_dict, image_b64=req.image_b64, question=req.question)
@@ -974,6 +1017,7 @@ def _run_explain_uncached(
         "latency_ms": latency_ms,
         "analysis_id": analysis_id,
         "fidelity": fidelity_dict,
+        "synergy": synergy_dict,
     }
 
 
@@ -981,6 +1025,7 @@ def _run_explain_with_cache(
     req: ExplainRequest,
     *,
     fidelity: bool,
+    synergy: bool,
     record: bool,
 ) -> tuple[ExplainResponse, bool]:
     """Run /explain through the cache. Returns (response, was_cache_hit).
@@ -1004,10 +1049,12 @@ def _run_explain_with_cache(
     cache = get_cache()
     if cache is None:
         return ExplainResponse(
-            **_run_explain_uncached(req, fidelity=fidelity, record=record)
+            **_run_explain_uncached(
+                req, fidelity=fidelity, synergy=synergy, record=record
+            )
         ), False
 
-    key = _explain_cache_key(req, fidelity)
+    key = _explain_cache_key(req, fidelity, synergy)
     t0 = time.perf_counter()
     cached = cache.get(key)
     if cached is not None:
@@ -1022,6 +1069,7 @@ def _run_explain_with_cache(
             "attention_grid": cached["attention_grid"],
             "top_regions": cached["top_regions"],
             "fidelity": cached.get("fidelity"),
+            "synergy": cached.get("synergy"),
             "cache_hit": True,
         }
         fresh_id = (
@@ -1042,7 +1090,9 @@ def _run_explain_with_cache(
         )
         return ExplainResponse(**merged), True
 
-    payload = _run_explain_uncached(req, fidelity=fidelity, record=record)
+    payload = _run_explain_uncached(
+        req, fidelity=fidelity, synergy=synergy, record=record
+    )
     cache.put(key, payload, method=req.method, model_name=req.model_name)
     return ExplainResponse(**payload), False
 
@@ -1057,6 +1107,16 @@ def explain(
             "Run the deletion test on the saliency map and include a "
             "fidelity block in the response. Doubles the backend call "
             "count, so off by default."
+        ),
+    ),
+    synergy: bool = Query(
+        default=False,
+        description=(
+            "Run the modality-level synergy test (vision×language Shapley "
+            "interaction) and include a synergy block in the response. "
+            "Adds three extra backend calls, so off by default. A low "
+            "synergy_score flags visual-only salience rather than faithful "
+            "cross-modal reasoning."
         ),
     ),
     record: bool = Query(
@@ -1083,12 +1143,16 @@ def explain(
     clients can observe cache behaviour without parsing the JSON.
     """
     if use_cache and is_cache_enabled():
-        result, was_hit = _run_explain_with_cache(req, fidelity=fidelity, record=record)
+        result, was_hit = _run_explain_with_cache(
+            req, fidelity=fidelity, synergy=synergy, record=record
+        )
         response.headers["X-Miru-Cache"] = "hit" if was_hit else "miss"
         return result
     response.headers["X-Miru-Cache"] = "bypass"
     return ExplainResponse(
-        **_run_explain_uncached(req, fidelity=fidelity, record=record)
+        **_run_explain_uncached(
+            req, fidelity=fidelity, synergy=synergy, record=record
+        )
     )
 
 
@@ -2192,6 +2256,7 @@ def explain_batch(req: BatchExplainRequest) -> BatchExplainResponse:
                 resp, was_hit = _run_explain_with_cache(
                     item_req,
                     fidelity=req.fidelity,
+                    synergy=req.synergy,
                     record=req.record,
                 )
             else:
@@ -2199,6 +2264,7 @@ def explain_batch(req: BatchExplainRequest) -> BatchExplainResponse:
                     **_run_explain_uncached(
                         item_req,
                         fidelity=req.fidelity,
+                        synergy=req.synergy,
                         record=req.record,
                     )
                 )

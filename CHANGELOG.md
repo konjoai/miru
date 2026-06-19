@@ -5,6 +5,71 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [1.9.0] — Phase 26: synergistic-faithfulness probe (F_syn)
+
+### Added
+
+#### `miru/synergy.py` — modality-level vision×language interaction
+- `synergy_test(backend, image, prompt, saliency_map, *, k_pct,
+  neutral_prompt, baseline_confidence)` measures the Shapley *interaction*
+  between the two modalities — the discrete mixed second difference of model
+  confidence over presence/absence of the salient visual region and the
+  question. Returns `SynergyResult`: `synergy_score = clamp(interaction /
+  max(eps, f_both), 0, 1)`, the four ablation confidences (`f_both`,
+  `f_language_only`, `f_vision_only`, `f_neither`), `interaction`, `k_pct`,
+  and a `low_synergy` flag (`< 0.3`).
+- Distinguishes faithful cross-modal reasoning (salient region matters
+  *because of* the question → high synergy) from visual-only salience
+  (region drives confidence regardless of the question → ~0 synergy), the
+  failure mode deletion/insertion AUC over-credits (cf. Cross-Modal Synergy
+  benchmark, arXiv:2605.22168; Grabisch & Roubens 1999; Janizek et al. 2021).
+- Pure NumPy, deterministic, no new dependencies. Reuses
+  `miru.fidelity._mask_top_k` for the visual ablation rather than
+  re-implementing it. The image-independent mock backend reports exactly
+  zero synergy — an honest signal that its saliency is question-hash-driven.
+
+#### `synergy` flag on `POST /explain` (`api/main.py`)
+- New `synergy: bool = false` query param adds a `SynergyBlock` to the
+  response (three extra `backend.infer()` calls; off by default). Folded
+  into `_explain_cache_key` so synergy and non-synergy results never collide,
+  and into `BatchExplainRequest` so `POST /explain/batch` can request it
+  per-batch. Works across all four methods (attention, lime, gradcam, shap).
+
+#### `api/conftest.py`
+- Shared `png_b64` fixture extracted from the per-file duplicates (net DRY
+  reduction).
+
+### Tests
+- `tests/test_synergy.py` — 13 unit tests (positive-synergy via a synthetic
+  cross-modal backend, zero-synergy via a visual-only backend and the mock,
+  mixed-second-difference identity, determinism, baseline reuse, validation).
+- `api/test_synergy.py` — 10 HTTP tests (block presence/absence, field
+  contract, unit range, mock zero-synergy, coexistence with fidelity, cache-
+  key isolation, lime method, batch propagation).
+
+### Fixed
+- Unified the three drifting version sources (`pyproject.toml`,
+  `miru/__init__.py`, `miru/config.py`) to a single value; the `/health`
+  version assertion in `tests/test_api.py` now tracks it.
+
+---
+
+## [1.8.0] — Phase 25: explanation alert rules
+
+### Added
+
+#### `miru/alerts.py` — rule store + webhook delivery
+- SQLite-backed `AlertStore` with CRUD over `Rule`s (threshold comparisons on
+  `confidence` / `fidelity_score` and the `low_fidelity` flag), evaluation of
+  recorded `/explain` output into `FiredAlert`s, and asynchronous webhook
+  delivery with SSRF-guarded URL validation (`validate_webhook_url`).
+- Wired into `POST /explain` via `_evaluate_and_fire_alerts` (non-blocking;
+  delivery never breaks the request path). Runtime DB `miru_alerts.db` is
+  git-ignored.
+- `api/test_alerts.py` covers the rule lifecycle, evaluation, and delivery.
+
+---
+
 ## [1.7.0] — Phase 24: ROI-targeted explanation
 
 ### Added
