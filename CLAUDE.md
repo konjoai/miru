@@ -2,7 +2,7 @@
 
 Multimodal reasoning tracer — extract, visualize, and explain what vision-language models attend to. Attention maps, reasoning traces, visualization overlays, and a dataset recorder for training data collection.
 
-**v0.5.0** — 100 tests passing (4 real-backend tests skipped without `MIRU_TEST_REAL_BACKENDS=1`).
+**v1.9.0** — 733 tests passing (5 skipped without `MIRU_TEST_REAL_BACKENDS=1`).
 
 ## Stack
 Python 3.10+ · FastAPI · Pydantic v2 · transformers (CLIP, optional) · Pillow · NumPy · uvicorn
@@ -37,6 +37,10 @@ python -m miru                                        # CLI entry point
 | `miru/reasoning/tracer.py` | Structured reasoning trace with decay confidence |
 | `miru/visualization/overlay.py` | Attention heatmap overlay on input image |
 | `miru/recorder.py` | Dataset recorder for training data collection |
+| `miru/fidelity.py` | Deletion-test fidelity scorecard (does masking salient pixels drop confidence?) |
+| `miru/synergy.py` | Modality-level vision×language Shapley-interaction probe (F_syn) |
+| `miru/alerts.py` | SQLite rule store + webhook delivery for `/explain` anomalies |
+| `api/main.py` | Deployable FastAPI surface: `/explain`, `/explain/batch`, `/annotate`, etc. |
 | `miru/cli/` | CLI entry points |
 
 ## Planning Docs
