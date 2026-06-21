@@ -6,6 +6,7 @@ Run from the repo root:
 
     python -m pytest api/test_api.py -v
 """
+
 from __future__ import annotations
 
 import base64
@@ -52,9 +53,7 @@ def synthetic_png_b64() -> str:
     except ImportError:
         from miru.visualization.overlay import encode_png_b64
 
-        rgba = np.concatenate(
-            [img, np.full((h, w, 1), 255, dtype=np.uint8)], axis=2
-        )
+        rgba = np.concatenate([img, np.full((h, w, 1), 255, dtype=np.uint8)], axis=2)
         return encode_png_b64(rgba)
 
 
@@ -104,7 +103,9 @@ def test_methods_lists_implemented_and_roadmap(client: TestClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_explain_with_png_returns_overlay(client: TestClient, synthetic_png_b64: str) -> None:
+def test_explain_with_png_returns_overlay(
+    client: TestClient, synthetic_png_b64: str
+) -> None:
     payload = {
         "image_b64": synthetic_png_b64,
         "model_name": "mock",
@@ -131,7 +132,9 @@ def test_explain_with_png_returns_overlay(client: TestClient, synthetic_png_b64:
     assert body["latency_ms"] >= 0.0
 
 
-def test_explain_malformed_image_returns_400(client: TestClient, malformed_b64: str) -> None:
+def test_explain_malformed_image_returns_400(
+    client: TestClient, malformed_b64: str
+) -> None:
     resp = client.post(
         "/explain",
         json={"image_b64": malformed_b64, "model_name": "mock", "method": "attention"},
@@ -140,16 +143,24 @@ def test_explain_malformed_image_returns_400(client: TestClient, malformed_b64: 
     assert "image_b64" in resp.json()["detail"]
 
 
-def test_explain_unknown_model_returns_400(client: TestClient, synthetic_png_b64: str) -> None:
+def test_explain_unknown_model_returns_400(
+    client: TestClient, synthetic_png_b64: str
+) -> None:
     resp = client.post(
         "/explain",
-        json={"image_b64": synthetic_png_b64, "model_name": "does-not-exist", "method": "attention"},
+        json={
+            "image_b64": synthetic_png_b64,
+            "model_name": "does-not-exist",
+            "method": "attention",
+        },
     )
     assert resp.status_code == 400
     assert "does-not-exist" in resp.json()["detail"]
 
 
-def test_explain_roadmap_method_returns_400(client: TestClient, synthetic_png_b64: str) -> None:
+def test_explain_roadmap_method_returns_400(
+    client: TestClient, synthetic_png_b64: str
+) -> None:
     """Any method in ROADMAP_METHODS must be rejected with a roadmap message.
 
     Picks the first roadmap method dynamically so this stays green as
@@ -166,10 +177,16 @@ def test_explain_roadmap_method_returns_400(client: TestClient, synthetic_png_b6
     assert "roadmap" in resp.json()["detail"].lower()
 
 
-def test_explain_unknown_method_returns_400(client: TestClient, synthetic_png_b64: str) -> None:
+def test_explain_unknown_method_returns_400(
+    client: TestClient, synthetic_png_b64: str
+) -> None:
     resp = client.post(
         "/explain",
-        json={"image_b64": synthetic_png_b64, "model_name": "mock", "method": "totally-bogus"},
+        json={
+            "image_b64": synthetic_png_b64,
+            "model_name": "mock",
+            "method": "totally-bogus",
+        },
     )
     assert resp.status_code == 400
     assert "totally-bogus" in resp.json()["detail"]
@@ -291,7 +308,9 @@ def test_explain_each_implemented_method(
 # ---------------------------------------------------------------------------
 
 
-def test_explain_compare_returns_two_overlays(client: TestClient, synthetic_png_b64: str) -> None:
+def test_explain_compare_returns_two_overlays(
+    client: TestClient, synthetic_png_b64: str
+) -> None:
     payload = {
         "image_b64": synthetic_png_b64,
         "model_name": "mock",
@@ -383,7 +402,9 @@ def record_dir(tmp_path, monkeypatch):
 
 
 def test_explain_returns_analysis_id_without_fidelity_block_by_default(
-    client: TestClient, synthetic_png_b64: str, record_dir,
+    client: TestClient,
+    synthetic_png_b64: str,
+    record_dir,
 ) -> None:
     """Default /explain returns an analysis_id but no fidelity block."""
     resp = client.post(
@@ -402,7 +423,9 @@ def test_explain_returns_analysis_id_without_fidelity_block_by_default(
 
 
 def test_explain_with_fidelity_query_includes_fidelity_block(
-    client: TestClient, synthetic_png_b64: str, record_dir,
+    client: TestClient,
+    synthetic_png_b64: str,
+    record_dir,
 ) -> None:
     resp = client.post(
         "/explain?fidelity=true",
@@ -417,7 +440,13 @@ def test_explain_with_fidelity_query_includes_fidelity_block(
     body = resp.json()
     assert body["fidelity"] is not None
     f = body["fidelity"]
-    for k in ("fidelity_score", "baseline_confidence", "masked_confidence", "k_pct", "low_fidelity"):
+    for k in (
+        "fidelity_score",
+        "baseline_confidence",
+        "masked_confidence",
+        "k_pct",
+        "low_fidelity",
+    ):
         assert k in f
     assert 0.0 <= f["fidelity_score"] <= 1.0
 
@@ -426,7 +455,8 @@ def test_explain_with_fidelity_query_includes_fidelity_block(
 
 
 def test_consensus_happy_path(
-    client: TestClient, synthetic_png_b64: str,
+    client: TestClient,
+    synthetic_png_b64: str,
 ) -> None:
     resp = client.post(
         "/explain/consensus",
@@ -454,7 +484,8 @@ def test_consensus_happy_path(
 
 
 def test_consensus_rejects_fewer_than_two_methods(
-    client: TestClient, synthetic_png_b64: str,
+    client: TestClient,
+    synthetic_png_b64: str,
 ) -> None:
     resp = client.post(
         "/explain/consensus",
@@ -469,7 +500,8 @@ def test_consensus_rejects_fewer_than_two_methods(
 
 
 def test_consensus_rejects_duplicate_methods(
-    client: TestClient, synthetic_png_b64: str,
+    client: TestClient,
+    synthetic_png_b64: str,
 ) -> None:
     resp = client.post(
         "/explain/consensus",
@@ -484,7 +516,8 @@ def test_consensus_rejects_duplicate_methods(
 
 
 def test_consensus_rejects_roadmap_or_unknown_method(
-    client: TestClient, synthetic_png_b64: str,
+    client: TestClient,
+    synthetic_png_b64: str,
 ) -> None:
     """Consensus must reject methods that aren't in IMPLEMENTED_METHODS.
 
@@ -514,7 +547,9 @@ def test_eu_ai_act_report_returns_404_for_unknown_id(client: TestClient) -> None
 
 
 def test_eu_ai_act_report_happy_path(
-    client: TestClient, synthetic_png_b64: str, record_dir,
+    client: TestClient,
+    synthetic_png_b64: str,
+    record_dir,
 ) -> None:
     """Run /explain, then look up its report by analysis_id."""
     a = client.post(
@@ -541,18 +576,52 @@ def test_eu_ai_act_report_happy_path(
     assert body["article_11"]["analysis_id"] == analysis_id
 
 
+def test_eu_ai_act_report_includes_new_articles(
+    client: TestClient,
+    synthetic_png_b64: str,
+    record_dir,
+) -> None:
+    """Art. 12/86, documented feature importance, and the synergy-aware
+    robustness risk all surface end-to-end. The mock backend is
+    image-independent, so synergy is zero and the visual-only-salience
+    risk must fire."""
+    a = client.post(
+        "/explain?fidelity=true&synergy=true",
+        json={
+            "image_b64": synthetic_png_b64,
+            "model_name": "mock",
+            "method": "attention",
+            "question": "what?",
+        },
+    ).json()
+    from miru.recorder import get_recorder
+
+    get_recorder().flush()
+    body = client.get(f"/report/{a['analysis_id']}/eu_ai_act").json()
+
+    assert body["article_12"]["analysis_id"] == a["analysis_id"]
+    assert body["article_86"]["plain_language_explanation"]
+    assert body["article_13"]["feature_importance"]  # non-empty
+    assert body["article_15"]["synergy"]["synergy_score"] == pytest.approx(0.0)
+    assert any(
+        "visual_only_salience" in risk for risk in body["article_15"]["detected_risks"]
+    )
+    for art in ("article_11", "article_12", "article_13", "article_15", "article_86"):
+        assert body["compliance_status"][art]["status"] in ("ok", "incomplete")
+
+
 # ----- export -------------------------------------------------------------
 
 
 def test_export_returns_404_for_unknown_id(client: TestClient) -> None:
-    resp = client.get(
-        "/analysis/zz-not-a-real-id-12345/export?format=json"
-    )
+    resp = client.get("/analysis/zz-not-a-real-id-12345/export?format=json")
     assert resp.status_code == 404
 
 
 def test_export_rejects_invalid_format(
-    client: TestClient, synthetic_png_b64: str, record_dir,
+    client: TestClient,
+    synthetic_png_b64: str,
+    record_dir,
 ) -> None:
     a = client.post(
         "/explain",
@@ -571,7 +640,9 @@ def test_export_rejects_invalid_format(
 
 
 def test_export_png_returns_image(
-    client: TestClient, synthetic_png_b64: str, record_dir,
+    client: TestClient,
+    synthetic_png_b64: str,
+    record_dir,
 ) -> None:
     a = client.post(
         "/explain",
@@ -592,7 +663,9 @@ def test_export_png_returns_image(
 
 
 def test_export_json_returns_record(
-    client: TestClient, synthetic_png_b64: str, record_dir,
+    client: TestClient,
+    synthetic_png_b64: str,
+    record_dir,
 ) -> None:
     a = client.post(
         "/explain",

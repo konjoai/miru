@@ -1309,7 +1309,9 @@ def eu_ai_act_report(
 
     Looks the analysis up by ID in the recorder's JSONL store; returns
     a structured report covering Article 11 (technical documentation),
-    Article 13 (transparency), and Article 15 (accuracy & robustness).
+    Article 12 (record-keeping), Article 13 (transparency, incl. documented
+    feature importance), Article 15 (accuracy & robustness, incl. the
+    cross-modal synergy probe), and Article 86 (right to explanation).
 
     Returns 404 when the analysis_id is not present in the record store
     (which most often means recording was disabled at /explain time).

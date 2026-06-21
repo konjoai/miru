@@ -5,6 +5,44 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [1.10.0] — Phase 27: EU AI Act compliance harden
+
+### Added
+
+#### `miru/eu_ai_act.py` — expanded to the Aug 2026 checklist
+- **Article 12 (record-keeping/logging)** block — documents the immutable,
+  privacy-stripped JSONL log entry, its retention, and full reproducibility
+  from `analysis_id` via `GET /analysis/{id}/export`.
+- **Article 86 (right to explanation)** block — a plain-language, person-facing
+  rationale citing the single most influential image region, the model
+  confidence (rendered as a percentage), and a contestability note.
+- **Documented feature importance** in Article 13 — the ranked salient regions
+  (top 5) surfaced as `feature_importance` evidence.
+- **Synergy-aware robustness** in Article 15 — surfaces the cross-modal synergy
+  probe (Phase 26) and adds a `visual_only_salience` risk when `low_synergy`
+  fires, composing the F_syn signal into the compliance surface.
+- `compliance_status` extended to cover Articles 12 and 86. Report bumped to
+  `REPORT_VERSION = "1.1"`.
+
+### Changed
+- Refactored `generate_report` from one inline function (radon **C(19)**) into a
+  thin orchestrator over per-article builders (now **A(1)**; every function in
+  the module is grade B or better) — added the new articles while removing a
+  pre-existing complexity-gate smell.
+
+### Tests
+- `tests/test_eu_ai_act.py` — 12 new unit tests (Articles 12/86, feature
+  importance ranking + cap, synergy risk on/off, defensive malformed fields);
+  `api/test_api.py` — 1 new end-to-end test asserting the new blocks and the
+  mock's `visual_only_salience` risk fire through `GET /report/{id}/eu_ai_act`.
+  100% coverage on `miru/eu_ai_act.py`.
+
+### Fixed
+- Version bump to 1.10.0 across `pyproject.toml`, `miru/__init__.py`,
+  `miru/config.py`, and the `/health` assertion.
+
+---
+
 ## [1.9.0] — Phase 26: synergistic-faithfulness probe (F_syn)
 
 ### Added
