@@ -2,7 +2,7 @@
 
 Multimodal reasoning tracer — extract, visualize, and explain what vision-language models attend to. Attention maps, reasoning traces, visualization overlays, and a dataset recorder for training data collection.
 
-**v1.9.0** — 733 tests passing (5 skipped without `MIRU_TEST_REAL_BACKENDS=1`).
+**v1.10.0** — 748 tests passing (5 skipped without `MIRU_TEST_REAL_BACKENDS=1`).
 
 ## Stack
 Python 3.10+ · FastAPI · Pydantic v2 · transformers (CLIP, optional) · Pillow · NumPy · uvicorn

@@ -1,8 +1,8 @@
 # PLAN.md — Miru Roadmap
 
 **Project:** Miru — Multimodal Reasoning Tracer  
-**Current version:** v1.9.0  
-**Status:** synergistic-faithfulness probe / F_syn (Phase 26), explanation alert rules (Phase 25), ROI-targeted explanation (Phase 24), input sensitivity / robustness (Phase 23), 733 tests passing (5 skipped without MIRU_TEST_REAL_BACKENDS=1)
+**Current version:** v1.10.0  
+**Status:** EU AI Act compliance harden (Phase 27), synergistic-faithfulness probe / F_syn (Phase 26), explanation alert rules (Phase 25), ROI-targeted explanation (Phase 24), 748 tests passing (5 skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 
@@ -816,9 +816,36 @@ arXiv:2509.22415 / 2605.22168).
 
 ---
 
-## Phase 27 — TBD
+## Phase 27 — EU AI Act Compliance Harden (v1.10.0) ✅ COMPLETE
+
+**Goal:** Bring the compliance report up to the artifacts the AI Act
+high-risk obligations require from **Aug 2 2026**. The report covered
+Articles 11/13/15; this adds the missing record-keeping, right-to-explanation,
+documented feature-importance, and robustness evidence.
+
+**Delivered:**
+- `miru/eu_ai_act.py` — added **Article 12** (record-keeping/logging) and
+  **Article 86** (right to explanation: plain-language, person-facing rationale
+  citing the most influential region + contestability note); **documented
+  feature importance** (ranked top-5 regions) in Article 13; **synergy-aware
+  robustness** in Article 15 (surfaces the Phase 26 probe; `visual_only_salience`
+  risk when `low_synergy` fires). `compliance_status` extended to Arts. 12/86;
+  `REPORT_VERSION = "1.1"`.
+- Refactored `generate_report` C(19) → A(1) (orchestrator + per-article
+  helpers); every function now grade B or better — removed a pre-existing
+  complexity-gate smell while adding the features.
+- `GET /report/{id}/eu_ai_act` docstring updated to list all five articles.
+- 13 new tests (12 unit + 1 end-to-end); 100% coverage on `miru/eu_ai_act.py`.
+
+**Ship gate:** 748 tests (743 passed, 5 skipped); ruff/format clean; zero new
+DRY violations; radon all ≤ B.
+
+---
+
+## Phase 28 — TBD
 
 Open candidates (P2/P3 from the researched roadmap, plus deferred items):
+- ~~EU AI Act compliance report generator~~ ✅ hardened in Phase 27.
 - ~~Explanation alerts / anomaly detection~~ ✅ shipped in Phase 25.
 - ~~Synergistic-faithfulness probe (F_syn)~~ ✅ shipped in Phase 26.
 - ~~Region-of-interest (ROI) targeted explanation~~ ✅ shipped in Phase 24.

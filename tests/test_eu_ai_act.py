@@ -1,4 +1,5 @@
 """Tests for the EU AI Act compliance report generator."""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -142,3 +143,141 @@ def test_generate_report_tolerates_minimal_record() -> None:
     # Doesn't raise; produces a structurally valid envelope.
     assert "article_11" in r
     assert r["compliance_status"]["article_11"]["status"] == "incomplete"
+
+
+# ---------------------------------------------------------------------------
+# Article 12 — record-keeping
+# ---------------------------------------------------------------------------
+
+
+def test_article_12_documents_logging() -> None:
+    r = generate_report(_full_record())
+    a12 = r["article_12"]
+    assert a12["analysis_id"] == "abc12345-...-uuid"
+    assert a12["timestamp"] == "2026-05-12T10:00:00+00:00"
+    assert "SHA-256" in a12["log_record_format"]
+    assert r["compliance_status"]["article_12"]["status"] == "ok"
+
+
+def test_article_12_incomplete_without_id() -> None:
+    record = _full_record()
+    record["analysis_id"] = ""
+    r = generate_report(record)
+    status = r["compliance_status"]["article_12"]
+    assert status["status"] == "incomplete"
+    assert "analysis_id" in status["missing_fields"]
+
+
+# ---------------------------------------------------------------------------
+# Article 13 — documented feature importance
+# ---------------------------------------------------------------------------
+
+
+def test_article_13_documents_feature_importance() -> None:
+    record = _full_record()
+    record["trace"]["top_regions"] = [
+        {"row": 3, "col": 7, "score": 0.91},
+        {"row": 1, "col": 2, "score": 0.40},
+    ]
+    fi = generate_report(record)["article_13"]["feature_importance"]
+    assert [r["rank"] for r in fi] == [1, 2]
+    assert fi[0] == {"rank": 1, "row": 3, "col": 7, "score": pytest.approx(0.91)}
+
+
+def test_article_13_feature_importance_capped_at_five() -> None:
+    record = _full_record()
+    record["trace"]["top_regions"] = [
+        {"row": i, "col": i, "score": 1.0 - i * 0.1} for i in range(10)
+    ]
+    fi = generate_report(record)["article_13"]["feature_importance"]
+    assert len(fi) == 5
+
+
+def test_article_13_feature_importance_empty_when_absent() -> None:
+    assert generate_report(_full_record())["article_13"]["feature_importance"] == []
+
+
+# ---------------------------------------------------------------------------
+# Article 15 — synergy-aware robustness
+# ---------------------------------------------------------------------------
+
+
+def test_article_15_flags_visual_only_salience() -> None:
+    record = _full_record()
+    record["trace"]["synergy"] = {"synergy_score": 0.05, "low_synergy": True}
+    risks = generate_report(record)["article_15"]["detected_risks"]
+    assert any("visual_only_salience" in risk for risk in risks)
+
+
+def test_article_15_synergy_high_no_risk() -> None:
+    record = _full_record()
+    record["trace"]["synergy"] = {"synergy_score": 0.8, "low_synergy": False}
+    risks = generate_report(record)["article_15"]["detected_risks"]
+    assert not any("visual_only_salience" in risk for risk in risks)
+
+
+def test_article_15_surfaces_synergy_block() -> None:
+    record = _full_record()
+    record["trace"]["synergy"] = {"synergy_score": 0.8, "low_synergy": False}
+    a15 = generate_report(record)["article_15"]
+    assert a15["synergy"]["synergy_score"] == pytest.approx(0.8)
+
+
+def test_article_15_synergy_not_attached_by_default() -> None:
+    a15 = generate_report(_full_record())["article_15"]
+    assert a15["synergy"] == {"status": "not_attached"}
+
+
+# ---------------------------------------------------------------------------
+# Article 86 — right to explanation
+# ---------------------------------------------------------------------------
+
+
+def test_article_86_plain_language_mentions_answer_and_region() -> None:
+    record = _full_record()
+    record["trace"]["top_regions"] = [{"row": 4, "col": 6, "score": 0.9}]
+    a86 = generate_report(record)["article_86"]
+    text = a86["plain_language_explanation"]
+    assert "A circular bright object." in text
+    assert "row 4" in text and "col 6" in text
+    assert a86["most_influential_region"] == {
+        "rank": 1,
+        "row": 4,
+        "col": 6,
+        "score": pytest.approx(0.9),
+    }
+    assert r"83%" in text  # confidence rendered as a percentage
+
+
+def test_article_86_handles_missing_region() -> None:
+    r = generate_report(_full_record())
+    a86 = r["article_86"]
+    assert a86["most_influential_region"] is None
+    assert "No per-region influence" in a86["plain_language_explanation"]
+    assert r["compliance_status"]["article_86"]["status"] == "ok"
+
+
+def test_envelope_lists_all_five_articles() -> None:
+    r = generate_report(_full_record())
+    for art in ("article_11", "article_12", "article_13", "article_15", "article_86"):
+        assert art in r
+        assert art in r["compliance_status"]
+
+
+# ---------------------------------------------------------------------------
+# Defensive — malformed sub-fields
+# ---------------------------------------------------------------------------
+
+
+def test_feature_importance_skips_non_dict_regions() -> None:
+    record = _full_record()
+    record["trace"]["top_regions"] = [{"row": 0, "col": 0, "score": 0.5}, "garbage"]
+    fi = generate_report(record)["article_13"]["feature_importance"]
+    assert len(fi) == 1
+
+
+def test_non_numeric_confidence_becomes_null() -> None:
+    record = _full_record()
+    record["trace"]["confidence"] = "not-a-number"
+    a13 = generate_report(record)["article_13"]
+    assert a13["model_confidence"] is None
