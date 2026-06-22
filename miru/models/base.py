@@ -16,12 +16,16 @@ class VLMOutput:
         attention_weights: 2-D float32 array (H × W) with non-negative values;
             will be normalized downstream by AttentionExtractor.
         reasoning_steps: Ordered list of intermediate reasoning descriptions.
+        intra_visual_weights: Optional 2-D float32 array (H × W) of per-patch
+            intra-visual saliency (patches attending to each other).  ``None``
+            when the backend does not expose intra-visual attention.
     """
 
     answer: str
     confidence: float
     attention_weights: np.ndarray
     reasoning_steps: list[str]
+    intra_visual_weights: Optional[np.ndarray] = None
 
 
 @dataclass(frozen=True)
