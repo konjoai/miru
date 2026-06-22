@@ -44,6 +44,7 @@ from miru.ensemble import AttentionEnsemble, DEFAULT_SCALES
 from miru import gradcam_explainer, lime_explainer
 from miru.cross_modal import CrossModalTracer
 from miru.integrated_attention import IntegratedAttention
+from miru.joint_attribution import JointAttribution
 from miru.shap_explainer import SHAPConfig, SHAPExplainer
 from miru.attention.extractor import AttentionExtractor
 from miru.bench.comparison import compare_backends
@@ -85,7 +86,7 @@ DEFAULT_BENCH_SEED = 42
 DEFAULT_BENCH_SIZE = 64
 MAX_BENCH_SIZE = 128
 
-IMPLEMENTED_METHODS: tuple[str, ...] = ("attention", "lime", "gradcam", "shap", "integrated")
+IMPLEMENTED_METHODS: tuple[str, ...] = ("attention", "lime", "gradcam", "shap", "integrated", "joint")
 ROADMAP_METHODS: tuple[str, ...] = ()
 
 # Bound the budgets on the perturbation-based methods so a public deploy
@@ -226,6 +227,12 @@ class ExplainRequest(BaseModel):
     )
     n_steps: int = Field(20, ge=2, le=100, description="Integrated-attention interpolation steps.")
     integrated_baseline: str = Field("black", description="Integrated-attention baseline: 'black' or 'mean'.")
+    intra_weight: float = Field(
+        0.4,
+        ge=0.0,
+        le=1.0,
+        description="Joint-attribution intra-visual weight α ∈ [0, 1]. Cross-modal receives 1−α.",
+    )
     roi: BoundingBox | None = Field(
         None,
         description=(
@@ -792,6 +799,13 @@ _METHOD_DESCRIPTIONS: dict[str, str] = {
         "the attention maps along the path, and min-max normalises the result. "
         "Highlights regions whose attention rises most consistently as the image "
         "is revealed. Backend-agnostic; no gradients required."
+    ),
+    "joint": (
+        "Joint intra-modal + cross-modal attribution (arXiv:2509.22415): blends "
+        "per-patch intra-visual attention (patches attending to each other) with "
+        "cross-modal attention (language attending to patches) via a configurable "
+        "weight α. Produces more faithful saliency than cross-modal alone when "
+        "intra-visual weights are available."
     ),
 }
 
@@ -1542,6 +1556,14 @@ def _run_method(method: str, backend, image_array: np.ndarray, req):
             n_steps=n_steps, baseline=int_baseline
         ).explain(backend, image_array, req.question)
         return baseline, result.integrated_grid
+
+    if method == "joint":
+        baseline = backend.infer(image_array, req.question)
+        intra_w = getattr(req, "intra_weight", 0.4)
+        result = JointAttribution(intra_weight=intra_w).explain(
+            backend, image_array, req.question
+        )
+        return baseline, result.joint_grid
 
     raise HTTPException(status_code=400, detail=f"unsupported method: {method}")
 

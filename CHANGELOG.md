@@ -5,6 +5,53 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [1.11.0] — Phase 28: joint intra-modal + cross-modal attribution
+
+### Added
+
+#### `miru/joint_attribution.py` — joint attribution explainer
+- `JointAttribution(intra_weight, extractor)` — blends per-patch intra-visual
+  attention (`VLMOutput.intra_visual_weights`) with cross-modal attention
+  (`VLMOutput.attention_weights`) via `joint = α·intra + (1−α)·cross`,
+  min-max normalised to `[0, 1]`. Degrades gracefully to cross-modal only
+  when `intra_visual_weights` is absent (logs a warning).
+- `JointAttributionResult` frozen dataclass: `joint_grid`, `intra_weight`,
+  `cross_weight`, `used_intra`, `grid_h`, `grid_w`.
+- `DEFAULT_INTRA_WEIGHT = 0.4` exported constant.
+- Validation: `intra_weight ∈ [0, 1]`, raises `ValueError` otherwise.
+
+#### `VLMOutput` (`miru/models/base.py`)
+- New optional field `intra_visual_weights: np.ndarray | None = None` —
+  per-patch intra-visual saliency. Backward-compatible (defaults to `None`).
+
+#### `MockVLMBackend` (`miru/models/mock.py`)
+- `infer()` now populates `intra_visual_weights` with a second Gaussian blob
+  (XOR-seeded center, wider sigma=5.0) — distinct signal from cross-modal.
+
+#### `POST /explain` — `api/main.py`
+- `method="joint"` dispatched via `_run_method`.
+- `ExplainRequest` extended with `intra_weight` (float, ge=0.0, le=1.0,
+  default 0.4).
+- `"joint"` added to `IMPLEMENTED_METHODS` and `_METHOD_DESCRIPTIONS`.
+- `GET /methods` now lists `joint` with status `implemented`.
+
+### Tests
+- `tests/test_joint_attribution.py` — 26 tests: unit (dtype, value range,
+  shape, custom resolution, used_intra flag, weight reporting, intra=0
+  equals cross-modal, determinism, different weights differ, fallback with
+  no intra weights, boundary values, VLMOutput defaults, mock provides
+  intra weights), API (200, response shape, overlay, custom intra weight,
+  weight=0, /methods listing, error contracts, health regression).
+
+### Changed
+- Version bumped to `1.11.0` across `pyproject.toml`, `miru/__init__.py`,
+  `miru/config.py`. `tests/test_api.py` health-version assertion → `1.11.0`.
+
+### Test results
+- 775 passed, 20 skipped, 1 warning.
+
+---
+
 ## [1.10.0] — Phase 27: EU AI Act compliance harden
 
 ### Added

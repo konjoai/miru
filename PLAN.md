@@ -1,8 +1,8 @@
 # PLAN.md — Miru Roadmap
 
 **Project:** Miru — Multimodal Reasoning Tracer  
-**Current version:** v1.10.0  
-**Status:** EU AI Act compliance harden (Phase 27), synergistic-faithfulness probe / F_syn (Phase 26), explanation alert rules (Phase 25), ROI-targeted explanation (Phase 24), integrated attention explainer (Phase 22), 748 tests passing (5 skipped without MIRU_TEST_REAL_BACKENDS=1)
+**Current version:** v1.11.0  
+**Status:** Joint intra-modal + cross-modal attribution (Phase 28), EU AI Act compliance harden (Phase 27), synergistic-faithfulness probe / F_syn (Phase 26), 775 tests passing (20 skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 
