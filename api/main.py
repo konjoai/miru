@@ -45,6 +45,7 @@ from miru import gradcam_explainer, lime_explainer
 from miru.cross_modal import CrossModalTracer
 from miru.integrated_attention import IntegratedAttention
 from miru.joint_attribution import JointAttribution
+from miru.counterfactual import MinimalCounterfactual
 from miru.shap_explainer import SHAPConfig, SHAPExplainer
 from miru.attention.extractor import AttentionExtractor
 from miru.bench.comparison import compare_backends
@@ -103,6 +104,7 @@ MAX_SEARCH_TOP_K = 50  # cap /explain/search top_k
 MAX_SEARCH_SCAN = 2000  # cap /explain/search candidate-scan budget
 MAX_SENSITIVITY_SIGMAS = 8  # cap /explain/sensitivity noise-level sweep
 MAX_SENSITIVITY_TRIALS = 8  # cap perturbations per σ — bounds backend.infer() fan-out
+MAX_COUNTERFACTUAL_CELLS = 64  # cap /explain/counterfactual max_cells — bounds backend.infer() fan-out
 
 # One extractor instance — stateless, safe across requests.
 _EXTRACTOR = AttentionExtractor(resolution=settings.attention_resolution)
@@ -1893,6 +1895,91 @@ def explain_sensitivity(req: SensitivityRequest) -> SensitivityResponse:
             for p in result.per_sigma
         ],
         latency_ms=latency_ms,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Minimal counterfactual explanation endpoint
+# ---------------------------------------------------------------------------
+
+
+class CounterfactualRequest(BaseModel):
+    """Request body for ``POST /explain/counterfactual``."""
+
+    model_config = ConfigDict(frozen=True)
+    image_b64: str = Field(..., description="Base64-encoded source image (PNG/JPEG).")
+    model_name: str = Field("mock", description="Registered backend name (see /methods).")
+    question: str = Field(
+        "Where is the salient region?", description="Prompt to condition the backend."
+    )
+    confidence_drop: float = Field(
+        0.1,
+        gt=0.0,
+        le=1.0,
+        description="Target confidence-drop threshold to achieve by masking.",
+    )
+    max_cells: int = Field(
+        32,
+        ge=1,
+        le=MAX_COUNTERFACTUAL_CELLS,
+        description="Maximum grid cells to mask before giving up.",
+    )
+    fill_value: float = Field(
+        0.0,
+        ge=0.0,
+        le=1.0,
+        description="Pixel fill value for masked regions.",
+    )
+
+
+class CounterfactualResponse(BaseModel):
+    """Response body for ``POST /explain/counterfactual``."""
+
+    model_config = ConfigDict(frozen=True)
+    counterfactual_mask: list[list[bool]] = Field(
+        description="Binary grid; True where a cell was masked."
+    )
+    original_answer: str
+    original_confidence: float
+    counterfactual_answer: str
+    counterfactual_confidence: float
+    delta_confidence: float
+    n_cells_masked: int
+    grid_h: int
+    grid_w: int
+    flipped: bool
+    goal_reached: bool
+    latency_ms: float
+
+
+@app.post("/explain/counterfactual", response_model=CounterfactualResponse)
+def explain_counterfactual(req: CounterfactualRequest) -> CounterfactualResponse:
+    """Find the minimal set of salient cells whose removal drops confidence.
+
+    Greedily masks cells in descending saliency order until either the
+    confidence drops by ``confidence_drop`` or the answer changes.
+    """
+    t0 = time.perf_counter()
+    image_array = _decode_to_float_array(req.image_b64)
+    backend = _get_backend_or_400(req.model_name)
+    result = MinimalCounterfactual(
+        confidence_drop=req.confidence_drop,
+        max_cells=req.max_cells,
+        fill_value=req.fill_value,
+    ).explain(backend, image_array, req.question)
+    return CounterfactualResponse(
+        counterfactual_mask=result.counterfactual_mask.tolist(),
+        original_answer=result.original_answer,
+        original_confidence=result.original_confidence,
+        counterfactual_answer=result.counterfactual_answer,
+        counterfactual_confidence=result.counterfactual_confidence,
+        delta_confidence=result.delta_confidence,
+        n_cells_masked=result.n_cells_masked,
+        grid_h=result.grid_h,
+        grid_w=result.grid_w,
+        flipped=result.flipped,
+        goal_reached=result.goal_reached,
+        latency_ms=(time.perf_counter() - t0) * 1000,
     )
 
 
