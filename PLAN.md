@@ -1,8 +1,8 @@
 # PLAN.md — Miru Roadmap
 
 **Project:** Miru — Multimodal Reasoning Tracer  
-**Current version:** v1.11.0  
-**Status:** Qwen3-VL real backend (Phase 28), EU AI Act compliance harden (Phase 27), synergistic-faithfulness probe / F_syn (Phase 26), explanation alert rules (Phase 25), 767 tests passing (9 skipped without MIRU_TEST_REAL_BACKENDS=1)
+**Current version:** v1.12.0  
+**Status:** Qwen3-VL real backend (Phase 29), joint intra-modal + cross-modal attribution (Phase 28), EU AI Act compliance harden (Phase 27), synergistic-faithfulness probe / F_syn (Phase 26), 814 tests passing (9 skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 
@@ -842,7 +842,31 @@ DRY violations; radon all ≤ B.
 
 ---
 
-## Phase 28 — Qwen3-VL Real Backend (v1.11.0) ✅ COMPLETE
+## Phase 28 — Joint Intra-modal + Cross-modal Attribution (v1.11.0) ✅ COMPLETE
+
+**Goal:** Blend per-patch intra-visual attention with the cross-modal
+signal for more faithful saliency maps (informed by arXiv 2509.22415).
+
+**Delivered:**
+- `miru/joint_attribution.py` — `JointAttribution(intra_weight, extractor)`
+  blends intra-visual (`VLMOutput.intra_visual_weights`) with cross-modal
+  attention via `joint = α·intra + (1−α)·cross`, min-max normalised to
+  `[0, 1]`; degrades gracefully to cross-modal only when intra weights are
+  absent (logs a warning). `JointAttributionResult` frozen dataclass;
+  `DEFAULT_INTRA_WEIGHT = 0.4`; validates `intra_weight ∈ [0, 1]`.
+- `VLMOutput` — new optional `intra_visual_weights` field (back-compatible).
+- `MockVLMBackend.infer()` — now populates `intra_visual_weights` with a
+  distinct second Gaussian blob.
+- `POST /explain` — `method="joint"` with `intra_weight` param; listed in
+  `GET /methods`.
+- 26 new tests (`tests/test_joint_attribution.py`).
+
+**Ship gate:** 775 tests (passed, with gated skips); ruff/format clean; zero
+new DRY violations.
+
+---
+
+## Phase 29 — Qwen3-VL Real Backend (v1.12.0) ✅ COMPLETE
 
 **Goal:** Ship miru's first *generative* VLM backend with genuine
 cross-modal attention. CLIP is a dual-encoder that only scores
@@ -870,15 +894,16 @@ interrogate.
 - 19 new tests (`tests/test_qwen3vl_backend.py`): 5 structural, 10 pure-
   helper, 4 gated real-inference.
 
-**Ship gate:** 767 tests (758 passed, 9 skipped); ruff/format clean; zero
-new DRY; radon all grade A.
+**Ship gate:** 814 tests (805 passed, 9 skipped offline); ruff/format
+clean; zero new DRY; radon all grade A.
 
 ---
 
-## Phase 29 — TBD
+## Phase 30 — TBD
 
 Open candidates (P2/P3 from the researched roadmap, plus deferred items):
-- ~~Qwen3-VL real backend~~ ✅ shipped in Phase 28.
+- ~~Qwen3-VL real backend~~ ✅ shipped in Phase 29.
+- ~~Intra-modal + cross-modal joint attribution~~ ✅ shipped in Phase 28.
 - ~~EU AI Act compliance report generator~~ ✅ hardened in Phase 27.
 - ~~Explanation alerts / anomaly detection~~ ✅ shipped in Phase 25.
 - ~~Synergistic-faithfulness probe (F_syn)~~ ✅ shipped in Phase 26.
@@ -887,9 +912,6 @@ Open candidates (P2/P3 from the researched roadmap, plus deferred items):
 - ~~Expert annotation alignment (P2)~~ ✅ shipped in Phase 18.
 - ~~Dataset-level saliency analytics (P2)~~ ✅ shipped in Phase 19.
 - ~~Cross-modal attention tracer (P2)~~ ✅ shipped in Phase 17.
-- Intra-modal + cross-modal joint attribution (informed by arXiv 2509.22415) —
-  upgrade the attention extractor to sum intra-visual token interactions with
-  the cross-modal signal for more faithful maps (Medium complexity).
 - True Grad-CAM via torch-loaded CLIP-RN50 (P3).
 - Sparse Autoencoder (SAE) concept-based explanations via Prisma (arXiv 2504.19475)
   for the EU AI Act report narrative (P3).

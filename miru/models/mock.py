@@ -53,6 +53,7 @@ class MockVLMBackend(VLMBackend):
         confidence = float(0.70 + 0.29 * norm_len)
 
         attention_weights = self._make_gaussian_map(q_key)
+        intra_visual_weights = self._make_gaussian_map(q_key ^ 0xA5A5, sigma=5.0)
 
         reasoning_steps = list(_REASONING_TEMPLATES[0])
 
@@ -61,6 +62,7 @@ class MockVLMBackend(VLMBackend):
             confidence=confidence,
             attention_weights=attention_weights,
             reasoning_steps=reasoning_steps,
+            intra_visual_weights=intra_visual_weights,
         )
 
     # ------------------------------------------------------------------

@@ -5,7 +5,7 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
-## [1.11.0] — Phase 28: Qwen3-VL real backend
+## [1.12.0] — Phase 29: Qwen3-VL real backend
 
 ### Added
 
@@ -37,8 +37,55 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
   truncation / empty-guard), 4 gated real-inference.
 
 ### Fixed
-- Version bump to 1.11.0 across `pyproject.toml`, `miru/__init__.py`,
+- Version bump to 1.12.0 across `pyproject.toml`, `miru/__init__.py`,
   `miru/config.py`, and the `/health` assertion.
+
+---
+
+## [1.11.0] — Phase 28: joint intra-modal + cross-modal attribution
+
+### Added
+
+#### `miru/joint_attribution.py` — joint attribution explainer
+- `JointAttribution(intra_weight, extractor)` — blends per-patch intra-visual
+  attention (`VLMOutput.intra_visual_weights`) with cross-modal attention
+  (`VLMOutput.attention_weights`) via `joint = α·intra + (1−α)·cross`,
+  min-max normalised to `[0, 1]`. Degrades gracefully to cross-modal only
+  when `intra_visual_weights` is absent (logs a warning).
+- `JointAttributionResult` frozen dataclass: `joint_grid`, `intra_weight`,
+  `cross_weight`, `used_intra`, `grid_h`, `grid_w`.
+- `DEFAULT_INTRA_WEIGHT = 0.4` exported constant.
+- Validation: `intra_weight ∈ [0, 1]`, raises `ValueError` otherwise.
+
+#### `VLMOutput` (`miru/models/base.py`)
+- New optional field `intra_visual_weights: np.ndarray | None = None` —
+  per-patch intra-visual saliency. Backward-compatible (defaults to `None`).
+
+#### `MockVLMBackend` (`miru/models/mock.py`)
+- `infer()` now populates `intra_visual_weights` with a second Gaussian blob
+  (XOR-seeded center, wider sigma=5.0) — distinct signal from cross-modal.
+
+#### `POST /explain` — `api/main.py`
+- `method="joint"` dispatched via `_run_method`.
+- `ExplainRequest` extended with `intra_weight` (float, ge=0.0, le=1.0,
+  default 0.4).
+- `"joint"` added to `IMPLEMENTED_METHODS` and `_METHOD_DESCRIPTIONS`.
+- `GET /methods` now lists `joint` with status `implemented`.
+
+### Tests
+- `tests/test_joint_attribution.py` — 26 tests: unit (dtype, value range,
+  shape, custom resolution, used_intra flag, weight reporting, intra=0
+  equals cross-modal, determinism, different weights differ, fallback with
+  no intra weights, boundary values, VLMOutput defaults, mock provides
+  intra weights), API (200, response shape, overlay, custom intra weight,
+  weight=0, /methods listing, error contracts, health regression).
+
+### Changed
+- Version bumped to `1.11.0` across `pyproject.toml`, `miru/__init__.py`,
+  `miru/config.py`. `tests/test_api.py` health-version assertion → `1.11.0`.
+
+### Test results
+- 775 passed, 20 skipped, 1 warning.
 
 ---
 
@@ -297,6 +344,36 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
   write a record. They compose around the recorded explanation
   store opened up by Phase 20's `query_records()` /
   `find_record_by_id()`.
+
+## [Unreleased] — Phase 22 (integrated attention): path-integrated saliency
+
+### Added
+
+#### `miru/integrated_attention.py` — path-integrated attention
+- `IntegratedAttention(n_steps, baseline, extractor)` — interpolates a baseline
+  image to the input in `n_steps` steps, runs `backend.infer()` at each
+  interpolation, averages the normalised attention grids, and min-max normalises
+  the result to `[0, 1]`. Analogous to Integrated Gradients (Sundararajan et al.
+  2017) for attention-based explanations without gradient access.
+- `IntegratedAttentionResult` frozen dataclass: `integrated_grid`, `n_steps`,
+  `grid_h`, `grid_w`.
+- `baseline="black"` (zeros) and `baseline="mean"` (per-channel mean) supported.
+- `DEFAULT_N_STEPS=20`, `MIN_N_STEPS=2`, `MAX_N_STEPS=100` exported constants.
+- Per-step failures logged and skipped; all-fail fallback returns zero grid.
+
+#### `POST /explain` — `api/main.py`
+- `method="integrated"` dispatched via `_run_method`.
+- `ExplainRequest` extended with `n_steps` (int, ge=2, le=100, default 20) and
+  `integrated_baseline` (str, default `"black"`).
+- `"integrated"` added to `IMPLEMENTED_METHODS` and `_METHOD_DESCRIPTIONS`.
+- `GET /methods` now lists `integrated` with status `implemented`.
+
+### Tests
+- `tests/test_integrated_attention.py` — 21 tests: unit (dtype, value range,
+  shape, n_steps reported, black/mean baselines, determinism, invalid params,
+  2-step minimum), API (200 happy path, response shape, overlay, mean baseline,
+  /methods listing, error contracts, health regression).
+
 
 ---
 
