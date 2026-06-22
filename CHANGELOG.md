@@ -5,6 +5,43 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [1.11.0] — Phase 28: Qwen3-VL real backend
+
+### Added
+
+#### `miru/models/qwen3vl.py` — generative VLM backend with cross-modal attention
+- `Qwen3VLBackend` — miru's first generative VLM backend (Qwen3-VL, Alibaba
+  Sept 2025). Unlike the dual-encoder `CLIPBackend`, it reasons over question
+  tokens and image patches jointly, so its saliency is what the synergy probe
+  (Phase 26) and deletion test (Phase 15) are designed to interrogate.
+- Lazy-loads weights on the first `infer()` call — never at import — so the
+  module imports cleanly in mock-only environments.
+- Attention is read from a **middle decoder layer** (cross-modal fusion peaks
+  mid-stack — Qwen2.5-VL report arXiv:2502.13923, layers ~14-24), as the
+  last-prompt-token → image-token attention (located via
+  `config.image_token_id`), head-averaged and reshaped to a square patch grid.
+  Confidence = first-generated-token softmax probability. Uses the `eager`
+  attention implementation (required for `output_attentions`).
+- The verifiable numeric logic (`_select_middle_layer`, `_attention_row_to_grid`)
+  is isolated in pure helpers and unit-tested fully offline; the model-load +
+  generation path is gated behind `MIRU_TEST_REAL_BACKENDS=1`, like CLIP.
+
+#### Registry + extras
+- `miru/models/registry.py` registers `qwen3vl` in `register_defaults()`.
+- `pyproject.toml` `[backends]` bumped to `transformers>=4.57.0` (the minimum
+  that ships Qwen3-VL natively).
+
+### Tests
+- `tests/test_qwen3vl_backend.py` — 19 tests: 5 structural (no load), 10
+  pure-helper (offline: layer selection bounds/clamping, grid reshape /
+  truncation / empty-guard), 4 gated real-inference.
+
+### Fixed
+- Version bump to 1.11.0 across `pyproject.toml`, `miru/__init__.py`,
+  `miru/config.py`, and the `/health` assertion.
+
+---
+
 ## [1.10.0] — Phase 27: EU AI Act compliance harden
 
 ### Added

@@ -1,8 +1,8 @@
 # PLAN.md — Miru Roadmap
 
 **Project:** Miru — Multimodal Reasoning Tracer  
-**Current version:** v1.10.0  
-**Status:** EU AI Act compliance harden (Phase 27), synergistic-faithfulness probe / F_syn (Phase 26), explanation alert rules (Phase 25), ROI-targeted explanation (Phase 24), 748 tests passing (5 skipped without MIRU_TEST_REAL_BACKENDS=1)
+**Current version:** v1.11.0  
+**Status:** Qwen3-VL real backend (Phase 28), EU AI Act compliance harden (Phase 27), synergistic-faithfulness probe / F_syn (Phase 26), explanation alert rules (Phase 25), 767 tests passing (9 skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 
@@ -842,9 +842,43 @@ DRY violations; radon all ≤ B.
 
 ---
 
-## Phase 28 — TBD
+## Phase 28 — Qwen3-VL Real Backend (v1.11.0) ✅ COMPLETE
+
+**Goal:** Ship miru's first *generative* VLM backend with genuine
+cross-modal attention. CLIP is a dual-encoder that only scores
+image/text similarity; Qwen3-VL (Alibaba, Sept 2025) reasons over the
+question tokens and image patches jointly, so its saliency is what the
+synergy probe (Phase 26) and deletion test (Phase 15) are designed to
+interrogate.
+
+**Delivered:**
+- `miru/models/qwen3vl.py` — `Qwen3VLBackend` mirrors the `CLIPBackend`
+  lazy-load contract (weights load on first `infer()`, never at import).
+  Attention is read from a **middle decoder layer** (cross-modal fusion
+  peaks mid-stack — Qwen2.5-VL report arXiv:2502.13923, layers ~14-24),
+  last-prompt-token → image-token attention (located via
+  `config.image_token_id`), head-averaged and reshaped to a square grid.
+  Confidence = first-generated-token softmax probability. `eager`
+  attention impl (required for `output_attentions`).
+- The verifiable numeric logic is isolated in pure helpers
+  (`_select_middle_layer`, `_attention_row_to_grid`) so it is unit-tested
+  fully offline; the model-load + generation path is gated behind
+  `MIRU_TEST_REAL_BACKENDS=1`, exactly like CLIP.
+- `miru/models/registry.py` — registers `qwen3vl` in `register_defaults()`.
+- `pyproject.toml` — `[backends]` bumped to `transformers>=4.57.0` (the
+  minimum that ships Qwen3-VL natively).
+- 19 new tests (`tests/test_qwen3vl_backend.py`): 5 structural, 10 pure-
+  helper, 4 gated real-inference.
+
+**Ship gate:** 767 tests (758 passed, 9 skipped); ruff/format clean; zero
+new DRY; radon all grade A.
+
+---
+
+## Phase 29 — TBD
 
 Open candidates (P2/P3 from the researched roadmap, plus deferred items):
+- ~~Qwen3-VL real backend~~ ✅ shipped in Phase 28.
 - ~~EU AI Act compliance report generator~~ ✅ hardened in Phase 27.
 - ~~Explanation alerts / anomaly detection~~ ✅ shipped in Phase 25.
 - ~~Synergistic-faithfulness probe (F_syn)~~ ✅ shipped in Phase 26.
