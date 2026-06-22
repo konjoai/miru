@@ -54,6 +54,11 @@ class MockVLMBackend(VLMBackend):
 
         attention_weights = self._make_gaussian_map(q_key)
         intra_visual_weights = self._make_gaussian_map(q_key ^ 0xA5A5, sigma=5.0)
+        # Four synthetic transformer layers: progressively wider Gaussians.
+        layer_attention_weights = [
+            self._make_gaussian_map(q_key ^ (layer_idx * 0x1111), sigma=2.0 + layer_idx)
+            for layer_idx in range(4)
+        ]
 
         reasoning_steps = list(_REASONING_TEMPLATES[0])
 
@@ -63,6 +68,7 @@ class MockVLMBackend(VLMBackend):
             attention_weights=attention_weights,
             reasoning_steps=reasoning_steps,
             intra_visual_weights=intra_visual_weights,
+            layer_attention_weights=layer_attention_weights,
         )
 
     # ------------------------------------------------------------------

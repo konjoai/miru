@@ -1,8 +1,8 @@
 # PLAN.md — Miru Roadmap
 
 **Project:** Miru — Multimodal Reasoning Tracer  
-**Current version:** v1.12.0  
-**Status:** Minimal counterfactual explanation (Phase 29), joint attribution (Phase 28), EU AI Act compliance harden (Phase 27), 803 tests passing (20 skipped without MIRU_TEST_REAL_BACKENDS=1)
+**Current version:** v1.13.0  
+**Status:** Attention rollout (Phase 30), minimal counterfactual (Phase 29), joint attribution (Phase 28), EU AI Act compliance harden (Phase 27), 828 tests passing (20 skipped without MIRU_TEST_REAL_BACKENDS=1)
 
 ---
 

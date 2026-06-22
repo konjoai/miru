@@ -46,6 +46,7 @@ from miru.cross_modal import CrossModalTracer
 from miru.integrated_attention import IntegratedAttention
 from miru.joint_attribution import JointAttribution
 from miru.counterfactual import MinimalCounterfactual
+from miru.rollout import AttentionRollout
 from miru.shap_explainer import SHAPConfig, SHAPExplainer
 from miru.attention.extractor import AttentionExtractor
 from miru.bench.comparison import compare_backends
@@ -87,7 +88,7 @@ DEFAULT_BENCH_SEED = 42
 DEFAULT_BENCH_SIZE = 64
 MAX_BENCH_SIZE = 128
 
-IMPLEMENTED_METHODS: tuple[str, ...] = ("attention", "lime", "gradcam", "shap", "integrated", "joint")
+IMPLEMENTED_METHODS: tuple[str, ...] = ("attention", "lime", "gradcam", "shap", "integrated", "joint", "rollout")
 ROADMAP_METHODS: tuple[str, ...] = ()
 
 # Bound the budgets on the perturbation-based methods so a public deploy
@@ -234,6 +235,12 @@ class ExplainRequest(BaseModel):
         ge=0.0,
         le=1.0,
         description="Joint-attribution intra-visual weight α ∈ [0, 1]. Cross-modal receives 1−α.",
+    )
+    residual_weight: float = Field(
+        0.5,
+        ge=0.0,
+        le=1.0,
+        description="Rollout residual (identity) weight ∈ [0, 1] for skip-connection modelling.",
     )
     roi: BoundingBox | None = Field(
         None,
@@ -808,6 +815,12 @@ _METHOD_DESCRIPTIONS: dict[str, str] = {
         "cross-modal attention (language attending to patches) via a configurable "
         "weight α. Produces more faithful saliency than cross-modal alone when "
         "intra-visual weights are available."
+    ),
+    "rollout": (
+        "Attention rollout (Abnar & Zuidema 2020, arXiv:2005.00928): propagates "
+        "per-layer attention maps through all transformer layers using a geometric "
+        "mean with a residual identity term modelling skip-connections. Produces a "
+        "more faithful saliency map than single-layer attention for deep ViT models."
     ),
 }
 
@@ -1566,6 +1579,14 @@ def _run_method(method: str, backend, image_array: np.ndarray, req):
             backend, image_array, req.question
         )
         return baseline, result.joint_grid
+
+    if method == "rollout":
+        baseline = backend.infer(image_array, req.question)
+        resid_w = getattr(req, "residual_weight", 0.5)
+        result = AttentionRollout(residual_weight=resid_w).explain(
+            backend, image_array, req.question
+        )
+        return baseline, result.rollout_grid
 
     raise HTTPException(status_code=400, detail=f"unsupported method: {method}")
 
