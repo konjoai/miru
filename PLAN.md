@@ -842,9 +842,68 @@ DRY violations; radon all ≤ B.
 
 ---
 
-## Phase 28 — TBD
+## Phase 28 — Joint Intra-modal + Cross-modal Attribution (v1.11.0) ✅ COMPLETE
+
+**Goal:** Blend per-patch intra-visual attention with the cross-modal
+signal for more faithful saliency maps (informed by arXiv 2509.22415).
+
+**Delivered:**
+- `miru/joint_attribution.py` — `JointAttribution(intra_weight, extractor)`
+  blends intra-visual (`VLMOutput.intra_visual_weights`) with cross-modal
+  attention via `joint = α·intra + (1−α)·cross`, min-max normalised to
+  `[0, 1]`; degrades gracefully to cross-modal only when intra weights are
+  absent (logs a warning). `JointAttributionResult` frozen dataclass;
+  `DEFAULT_INTRA_WEIGHT = 0.4`; validates `intra_weight ∈ [0, 1]`.
+- `VLMOutput` — new optional `intra_visual_weights` field (back-compatible).
+- `MockVLMBackend.infer()` — now populates `intra_visual_weights` with a
+  distinct second Gaussian blob.
+- `POST /explain` — `method="joint"` with `intra_weight` param; listed in
+  `GET /methods`.
+- 26 new tests (`tests/test_joint_attribution.py`).
+
+**Ship gate:** 775 tests (passed, with gated skips); ruff/format clean; zero
+new DRY violations.
+
+---
+
+## Phase 29 — Qwen3-VL Real Backend (v1.12.0) ✅ COMPLETE
+
+**Goal:** Ship miru's first *generative* VLM backend with genuine
+cross-modal attention. CLIP is a dual-encoder that only scores
+image/text similarity; Qwen3-VL (Alibaba, Sept 2025) reasons over the
+question tokens and image patches jointly, so its saliency is what the
+synergy probe (Phase 26) and deletion test (Phase 15) are designed to
+interrogate.
+
+**Delivered:**
+- `miru/models/qwen3vl.py` — `Qwen3VLBackend` mirrors the `CLIPBackend`
+  lazy-load contract (weights load on first `infer()`, never at import).
+  Attention is read from a **middle decoder layer** (cross-modal fusion
+  peaks mid-stack — Qwen2.5-VL report arXiv:2502.13923, layers ~14-24),
+  last-prompt-token → image-token attention (located via
+  `config.image_token_id`), head-averaged and reshaped to a square grid.
+  Confidence = first-generated-token softmax probability. `eager`
+  attention impl (required for `output_attentions`).
+- The verifiable numeric logic is isolated in pure helpers
+  (`_select_middle_layer`, `_attention_row_to_grid`) so it is unit-tested
+  fully offline; the model-load + generation path is gated behind
+  `MIRU_TEST_REAL_BACKENDS=1`, exactly like CLIP.
+- `miru/models/registry.py` — registers `qwen3vl` in `register_defaults()`.
+- `pyproject.toml` — `[backends]` bumped to `transformers>=4.57.0` (the
+  minimum that ships Qwen3-VL natively).
+- 19 new tests (`tests/test_qwen3vl_backend.py`): 5 structural, 10 pure-
+  helper, 4 gated real-inference.
+
+**Ship gate:** 814 tests (805 passed, 9 skipped offline); ruff/format
+clean; zero new DRY; radon all grade A.
+
+---
+
+## Phase 30 — TBD
 
 Open candidates (P2/P3 from the researched roadmap, plus deferred items):
+- ~~Qwen3-VL real backend~~ ✅ shipped in Phase 29.
+- ~~Intra-modal + cross-modal joint attribution~~ ✅ shipped in Phase 28.
 - ~~EU AI Act compliance report generator~~ ✅ hardened in Phase 27.
 - ~~Explanation alerts / anomaly detection~~ ✅ shipped in Phase 25.
 - ~~Synergistic-faithfulness probe (F_syn)~~ ✅ shipped in Phase 26.
@@ -853,9 +912,6 @@ Open candidates (P2/P3 from the researched roadmap, plus deferred items):
 - ~~Expert annotation alignment (P2)~~ ✅ shipped in Phase 18.
 - ~~Dataset-level saliency analytics (P2)~~ ✅ shipped in Phase 19.
 - ~~Cross-modal attention tracer (P2)~~ ✅ shipped in Phase 17.
-- Intra-modal + cross-modal joint attribution (informed by arXiv 2509.22415) —
-  upgrade the attention extractor to sum intra-visual token interactions with
-  the cross-modal signal for more faithful maps (Medium complexity).
 - True Grad-CAM via torch-loaded CLIP-RN50 (P3).
 - Sparse Autoencoder (SAE) concept-based explanations via Prisma (arXiv 2504.19475)
   for the EU AI Act report narrative (P3).
