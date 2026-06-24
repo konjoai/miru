@@ -5,6 +5,56 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 
 ---
 
+## [1.13.0] — Phase 30: attention rollout
+
+### Added
+
+#### `miru/rollout.py` — multi-layer attention rollout
+- `AttentionRollout(residual_weight, extractor)` — propagates per-layer
+  attention maps through all transformer layers using a geometric mean
+  (log-space average) with a residual identity term modelling skip-connections:
+  `â_l = (1−r)·norm(A_l) + r·uniform`, then `rollout = exp(mean_l log(â_l))`,
+  min-max normalised to `[0, 1]`.
+- `RolloutResult` frozen dataclass: `rollout_grid`, `n_layers`,
+  `used_layer_weights`, `residual_weight`, `grid_h`, `grid_w`.
+- Validation: `residual_weight ∈ [0, 1]`, raises `ValueError` otherwise.
+- Degrades gracefully to single-layer attention with a warning when
+  `VLMOutput.layer_attention_weights` is absent.
+- Cites Abnar & Zuidema 2020 (arXiv:2005.00928).
+
+#### `VLMOutput` (`miru/models/base.py`)
+- New optional field `layer_attention_weights: list[np.ndarray] | None = None` —
+  per-transformer-layer 2-D float32 attention maps, first to last.
+  Backward-compatible (defaults to `None`).
+
+#### `MockVLMBackend` (`miru/models/mock.py`)
+- `infer()` now populates `layer_attention_weights` with 4 synthetic layers
+  (progressively wider Gaussians, XOR-seeded per layer).
+
+#### `POST /explain` — `api/main.py`
+- `method="rollout"` dispatched via `_run_method`.
+- `ExplainRequest` extended with `residual_weight` (float, ge=0.0, le=1.0,
+  default 0.5).
+- `"rollout"` added to `IMPLEMENTED_METHODS` and `_METHOD_DESCRIPTIONS`.
+- `GET /methods` now lists `rollout` with status `implemented`.
+
+### Tests
+- `tests/test_rollout.py` — 25 tests: unit (dtype, value range, shape,
+  custom resolution, uses layer weights from mock, n_layers reported,
+  residual weight reported, determinism, residual=0 vs 1 differ, fallback
+  with no layer weights, invalid residual weight, boundaries, VLMOutput
+  defaults, mock provides 4 layers), API (200, response shape, overlay,
+  custom residual weight, /methods listing, error contracts, health regression).
+
+### Changed
+- Version bumped to `1.13.0`.
+- `tests/test_api.py` health-version assertion → `1.13.0`.
+
+### Test results
+- 828 passed, 20 skipped, 1 warning.
+
+---
+
 ## [1.12.0] — Phase 29: Qwen3-VL real backend
 
 ### Added

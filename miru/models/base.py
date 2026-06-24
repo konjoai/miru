@@ -19,6 +19,9 @@ class VLMOutput:
         intra_visual_weights: Optional 2-D float32 array (H × W) of per-patch
             intra-visual saliency (patches attending to each other).  ``None``
             when the backend does not expose intra-visual attention.
+        layer_attention_weights: Optional list of per-transformer-layer 2-D
+            float32 arrays ``(H × W)``, from first to last layer.  ``None``
+            when the backend exposes only the final-layer attention.
     """
 
     answer: str
@@ -26,6 +29,7 @@ class VLMOutput:
     attention_weights: np.ndarray
     reasoning_steps: list[str]
     intra_visual_weights: Optional[np.ndarray] = None
+    layer_attention_weights: Optional[list[np.ndarray]] = None
 
 
 @dataclass(frozen=True)
