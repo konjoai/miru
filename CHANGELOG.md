@@ -39,6 +39,45 @@ Format: [Conventional Commits](https://www.conventionalcommits.org/) + [Keep a C
 ### Fixed
 - Version bump to 1.12.0 across `pyproject.toml`, `miru/__init__.py`,
   `miru/config.py`, and the `/health` assertion.
+## [1.12.0] — Phase 29: minimal counterfactual explanation
+
+### Added
+
+#### `miru/counterfactual.py` — minimal counterfactual explainer
+- `MinimalCounterfactual(confidence_drop, max_cells, fill_value, extractor)` —
+  ranks grid cells by saliency (highest first), then greedily masks them one
+  at a time, calling `backend.infer()` after each, until confidence drops by
+  ≥ `confidence_drop` or the answer flips. Stops as early as possible.
+- `CounterfactualResult` frozen dataclass: `counterfactual_mask` (bool grid),
+  `original_answer/confidence`, `counterfactual_answer/confidence`,
+  `delta_confidence`, `n_cells_masked`, `grid_h/w`, `flipped`, `goal_reached`.
+- Validation: `confidence_drop > 0`, `max_cells ∈ [1, 256]`,
+  `fill_value ∈ [0, 1]`, raises `ValueError` otherwise.
+- Warns when goal not reached within `max_cells`.
+- Cites Wachter et al. 2017 and Samek et al. 2017.
+
+#### `POST /explain/counterfactual` — `api/main.py`
+- `CounterfactualRequest`: `image_b64`, `model_name`, `question`,
+  `confidence_drop` (gt=0, le=1, default 0.1), `max_cells` (ge=1,
+  le=64, default 32), `fill_value` (ge=0, le=1, default 0.0).
+- `CounterfactualResponse`: all `CounterfactualResult` fields +
+  `latency_ms`. Mask serialised as `list[list[bool]]`.
+- 400 on unknown model or bad image; 422 on out-of-range params.
+
+### Tests
+- `tests/test_counterfactual.py` — 28 tests: unit (mask shape/dtype,
+  n_cells consistency, confidence range, delta correctness,
+  max_cells cap, determinism, custom fill, custom resolution, flipped
+  matches answer comparison, invalid params, boundary values), API
+  (200, response fields, mask is 2D bool, confidence range, custom
+  params, n_cells ≤ max_cells, error contracts, health regression).
+
+### Changed
+- Version bumped to `1.12.0`.
+- `tests/test_api.py` health-version assertion → `1.12.0`.
+
+### Test results
+- 803 passed, 20 skipped, 1 warning.
 
 ---
 
