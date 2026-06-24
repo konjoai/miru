@@ -2,7 +2,7 @@
 
 Multimodal reasoning tracer — extract, visualize, and explain what vision-language models attend to. Attention maps, reasoning traces, visualization overlays, and a dataset recorder for training data collection.
 
-**v1.10.0** — 748 tests passing (5 skipped without `MIRU_TEST_REAL_BACKENDS=1`).
+**v1.11.0** — 767 tests passing (9 skipped without `MIRU_TEST_REAL_BACKENDS=1`).
 
 ## Stack
 Python 3.10+ · FastAPI · Pydantic v2 · transformers (CLIP, optional) · Pillow · NumPy · uvicorn
@@ -32,6 +32,7 @@ python -m miru                                        # CLI entry point
 | `miru/models/base.py` | `VLMBackend` abstract interface |
 | `miru/models/mock.py` | Deterministic `MockVLMBackend` (stable-hash Gaussian attention) |
 | `miru/models/clip.py` | `CLIPBackend` — HuggingFace CLIP via transformers (optional) |
+| `miru/models/qwen3vl.py` | `Qwen3VLBackend` — generative Qwen3-VL with cross-modal attention (optional) |
 | `miru/models/registry.py` | `register()`, `get()`, `available()`, `register_defaults()` |
 | `miru/attention/extractor.py` | Min-max norm, block-average resize, top-k hotspot detection |
 | `miru/reasoning/tracer.py` | Structured reasoning trace with decay confidence |

@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-backends = ["transformers>=4.35.0", "torch>=2.0.0", "Pillow>=9.0.0"]
+backends = ["transformers>=4.57.0", "torch>=2.0.0", "Pillow>=9.0.0"]
 storage = ["fsspec>=2024.2.0"]
 metrics = ["prometheus-client>=0.17.0"]
 dev = [

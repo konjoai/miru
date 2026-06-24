@@ -1,4 +1,5 @@
 """Backend registry: maps names to VLMBackend factory functions."""
+
 from __future__ import annotations
 
 from typing import Callable
@@ -34,5 +35,12 @@ def register_defaults() -> None:
         from miru.models.clip import CLIPBackend
 
         register("clip", CLIPBackend)
+    except ImportError:
+        pass  # transformers not installed
+
+    try:
+        from miru.models.qwen3vl import Qwen3VLBackend
+
+        register("qwen3vl", Qwen3VLBackend)
     except ImportError:
         pass  # transformers not installed
